@@ -11,7 +11,7 @@ CFLAGS = -Wall -Wextra -Werror -std=c11
 LDBL ?=
 CFLAGS += $(LDBL)
 
-TEST_LIBS = -lcheck -lm -lpthread -lsubunit
+TEST_LIBS ?= -lcheck -lm -lpthread -lsubunit
 
 SRC = s21_math.c
 OBJ = s21_math.o
