@@ -1,0 +1,18 @@
+# Build artifacts
+*.o
+*.a
+*.so
+*.gcda
+*.gcno
+*.gcov
+*.info
+test
+report/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
