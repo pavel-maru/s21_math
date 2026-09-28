@@ -6,7 +6,7 @@
 
 #define S21_PI 3.14159265358979323846
 #define S21_PI_2 1.57079632679489661923
-#define EPS 1e-6
+#define EPS 1e-12
 
 /* ---------- abs ---------- */
 START_TEST(test_abs_basic) {
@@ -138,6 +138,19 @@ START_TEST(test_pow_edge) {
   ck_assert_ldouble_eq_tol(s21_pow(2.0, 10.0), 1024.0, EPS);
   ck_assert_ldouble_eq_tol(s21_pow(2.0, -2.0), 0.25, EPS);
   ck_assert(s21_pow(-2.0, 0.5) != s21_pow(-2.0, 0.5));    /* NaN */
+}
+END_TEST
+
+START_TEST(test_pow_neg_large_exp) {
+  /* Отрицательное основание + большое целое чётное/нечётное */
+  ck_assert_ldouble_eq_tol(s21_pow(-2.0, 31.0), -2147483648.0, EPS);
+  ck_assert_ldouble_eq_tol(s21_pow(-2.0, 32.0), 4294967296.0, EPS);
+  ck_assert_ldouble_eq_tol(s21_pow(-2.0, 60.0),
+                           1152921504606846976.0, EPS);   /* 2^60 */
+  ck_assert_ldouble_eq_tol(s21_pow(-2.0, 61.0),
+                           -2305843009213693952.0, EPS);  /* -2^61 */
+  ck_assert_ldouble_eq_tol(s21_pow(-1.0, 1000.0), 1.0, EPS);
+  ck_assert_ldouble_eq_tol(s21_pow(-1.0, 1001.0), -1.0, EPS);
 }
 END_TEST
 
@@ -274,6 +287,7 @@ Suite *s21_math_suite(void) {
   /* pow */
   tcase_add_loop_test(tc, test_pow_loop, 0, 20);
   tcase_add_test(tc, test_pow_edge);
+  tcase_add_test(tc, test_pow_neg_large_exp);
 
   /* sin */
   tcase_add_loop_test(tc, test_sin_loop, 0, 40);

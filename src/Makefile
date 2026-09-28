@@ -1,7 +1,15 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -Werror -std=c11
-# Опционально: включает 128-битный long double (x86 only, может замедлить тесты)
-# CFLAGS += -mlong-double-128
+
+# Опционально: 128-битный long double (только x86, медленнее).
+# Включается так:
+#   make LDBL=-mlong-double-128
+#   make test LDBL=-mlong-double-128
+#   make gcov_report LDBL=-mlong-double-128
+# Осторожно: libcheck может быть собран под 80-битный long double —
+# тогда тесты начнут падать на сравнениях с эталоном. Проверяй перед сдачей.
+LDBL ?=
+CFLAGS += $(LDBL)
 
 TEST_LIBS = -lcheck -lm -lpthread -lsubunit
 
