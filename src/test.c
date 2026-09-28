@@ -67,7 +67,7 @@ START_TEST(test_fmod_loop) {
 END_TEST
 
 START_TEST(test_fmod_edge) {
-  ck_assert(s21_fmod(1.0, 0.0) != s21_fmod(1.0, 0.0));   /* NaN */
+  ck_assert(s21_fmod(1.0, 0.0) != s21_fmod(1.0, 0.0)); /* NaN */
   ck_assert_ldouble_eq(s21_fmod(5.0, INFINITY), 5.0);
   ck_assert(s21_fmod(INFINITY, 2.0) != s21_fmod(INFINITY, 2.0));
 }
@@ -83,7 +83,7 @@ END_TEST
 START_TEST(test_sqrt_edge) {
   ck_assert_ldouble_eq(s21_sqrt(0.0), 0.0);
   ck_assert_ldouble_eq(s21_sqrt(1.0), 1.0);
-  ck_assert(s21_sqrt(-1.0) != s21_sqrt(-1.0));            /* NaN */
+  ck_assert(s21_sqrt(-1.0) != s21_sqrt(-1.0)); /* NaN */
   ck_assert(s21_sqrt(INFINITY) == INFINITY);
 }
 END_TEST
@@ -114,7 +114,7 @@ END_TEST
 START_TEST(test_log_edge) {
   ck_assert_ldouble_eq(s21_log(1.0), 0.0);
   ck_assert(s21_log(0.0) == -INFINITY);
-  ck_assert(s21_log(-1.0) != s21_log(-1.0));              /* NaN */
+  ck_assert(s21_log(-1.0) != s21_log(-1.0)); /* NaN */
   ck_assert(s21_log(INFINITY) == INFINITY);
 }
 END_TEST
@@ -137,7 +137,7 @@ START_TEST(test_pow_edge) {
   ck_assert_ldouble_eq_tol(s21_pow(-2.0, 2.0), 4.0, EPS);
   ck_assert_ldouble_eq_tol(s21_pow(2.0, 10.0), 1024.0, EPS);
   ck_assert_ldouble_eq_tol(s21_pow(2.0, -2.0), 0.25, EPS);
-  ck_assert(s21_pow(-2.0, 0.5) != s21_pow(-2.0, 0.5));    /* NaN */
+  ck_assert(s21_pow(-2.0, 0.5) != s21_pow(-2.0, 0.5)); /* NaN */
 }
 END_TEST
 
@@ -145,10 +145,10 @@ START_TEST(test_pow_neg_large_exp) {
   /* Отрицательное основание + большое целое чётное/нечётное */
   ck_assert_ldouble_eq_tol(s21_pow(-2.0, 31.0), -2147483648.0, EPS);
   ck_assert_ldouble_eq_tol(s21_pow(-2.0, 32.0), 4294967296.0, EPS);
-  ck_assert_ldouble_eq_tol(s21_pow(-2.0, 60.0),
-                           1152921504606846976.0, EPS);   /* 2^60 */
-  ck_assert_ldouble_eq_tol(s21_pow(-2.0, 61.0),
-                           -2305843009213693952.0, EPS);  /* -2^61 */
+  ck_assert_ldouble_eq_tol(s21_pow(-2.0, 60.0), 1152921504606846976.0,
+                           EPS); /* 2^60 */
+  ck_assert_ldouble_eq_tol(s21_pow(-2.0, 61.0), -2305843009213693952.0,
+                           EPS); /* -2^61 */
   ck_assert_ldouble_eq_tol(s21_pow(-1.0, 1000.0), 1.0, EPS);
   ck_assert_ldouble_eq_tol(s21_pow(-1.0, 1001.0), -1.0, EPS);
 }

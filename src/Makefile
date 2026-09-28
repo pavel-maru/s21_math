@@ -17,6 +17,10 @@ SRC = s21_math.c
 OBJ = s21_math.o
 LIB = s21_math.a
 
+# Файлы, к которым применяется clang-format
+FORMAT_FILES = s21_math.c s21_math.h test.c
+CLANG_FORMAT ?= clang-format
+
 all: $(LIB)
 
 $(LIB): $(OBJ)
@@ -36,6 +40,17 @@ gcov_report: clean
 	lcov -t "s21_math" -o s21_math.info -c -d . --no-external
 	genhtml -o report s21_math.info
 
+# Форматирование файлов по Google Style (см. .clang-format в корне src/)
+clang-format:
+	$(CLANG_FORMAT) -i $(FORMAT_FILES)
+
+# Проверка без изменения файлов — удобно для CI и перед коммитом.
+# Выход с ошибкой, если что-то не отформатировано.
+clang-format-check:
+	$(CLANG_FORMAT) --dry-run --Werror $(FORMAT_FILES)
+
 clean:
 	rm -f $(OBJ) $(LIB) test *.gcda *.gcno *.info
 	rm -rf report
+
+.PHONY: all clean test gcov_report clang-format clang-format-check
