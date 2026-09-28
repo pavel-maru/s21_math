@@ -73,6 +73,16 @@ START_TEST(test_fmod_edge) {
 }
 END_TEST
 
+START_TEST(test_fmod_large) {
+  /* Устойчивость к большим аргументам: xl/yl не влезает в long long.
+     Для 1e30 эталон сам теряет точность, поэтому допуск мягче. */
+  ck_assert_ldouble_eq_tol(s21_fmod(1e18, 7.0), fmod(1e18, 7.0), EPS);
+  ck_assert_ldouble_eq_tol(s21_fmod(-1e18, 7.0), fmod(-1e18, 7.0), EPS);
+  ck_assert_ldouble_eq_tol(s21_fmod(1e30, 3.0), fmod(1e30, 3.0), 1e-6);
+  ck_assert_ldouble_eq_tol(s21_fmod(-1e30, 3.0), fmod(-1e30, 3.0), 1e-6);
+}
+END_TEST
+
 /* ---------- sqrt ---------- */
 START_TEST(test_sqrt_loop) {
   double x = _i * 0.7;
@@ -271,6 +281,7 @@ Suite *s21_math_suite(void) {
   /* fmod */
   tcase_add_loop_test(tc, test_fmod_loop, 0, 25);
   tcase_add_test(tc, test_fmod_edge);
+  tcase_add_test(tc, test_fmod_large);
 
   /* sqrt */
   tcase_add_loop_test(tc, test_sqrt_loop, 0, 30);

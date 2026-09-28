@@ -115,10 +115,21 @@ long double s21_fmod(double x, double y) {
   if (s21_isnan_l(x) || s21_isnan_l(y) || s21_isinf_l(x) || y == 0.0)
     return S21_NAN;
   if (s21_isinf_l(y)) return x;
-  long double xl = (long double)x;
-  long double yl = (long double)y;
-  long double n = s21_trunc_l(xl / yl);
-  return xl - n * yl;
+
+  /* Знак результата = знак x; работаем с модулями.
+     Внутренний цикл подбирает максимальное t = y * 2^k <= xl,
+     внешний вычитает такие t, пока xl >= yl.
+     Это устойчиво к большим x, где xl / yl не влезает в long long. */
+  long double xl = s21_fabsl((long double)x);
+  long double yl = s21_fabsl((long double)y);
+
+  while (xl >= yl) {
+    long double t = yl;
+    while (t * 2.0L <= xl) t *= 2.0L;
+    xl -= t;
+  }
+
+  return ((long double)x < 0) ? -xl : xl;
 }
 
 long double s21_sqrt(double x) {
@@ -221,7 +232,8 @@ long double s21_pow(double base, double exp_val) {
     return 0.0L;
   }
 
-  /* Целый показатель — точное бинарное возведение, без exp/log */
+  /* Целый показатель — точное бинарное возведение, без exp/log.
+     Порог 1e18 — защита от переполнения long long при приведении. */
   long double e_int = s21_trunc_l(e);
   if (e_int == e && s21_fabsl(e) < 1e18L) {
     return s21_powi(b, (long long)e_int);
