@@ -285,7 +285,7 @@ START_TEST(test_precision_compare) {
      |libm - s21_*| и ULP-отклонения |libm - s21_*| / ulp(libm).
      ULP-метрика нормирована: 0 = точное совпадение, 1 = расхождение
      на одно представимое long double число. */
-  const double args[] = {0.5,  1.0,  1.5,  2.0,   3.0,   5.0,
+  const double args[] = {0.5,  1.0,  1.5,   2.0, 3.0, 5.0,
                          10.0, 20.0, 100.0, 1e3, 1e6, 1e10};
   const int n = (int)(sizeof(args) / sizeof(args[0]));
 
