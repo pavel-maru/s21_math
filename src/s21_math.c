@@ -215,10 +215,40 @@ long double s21_exp(double x) {
   }
   if (y > S21_EXP_LIMIT) return sign ? 0.0L : S21_INF;
 
-  /* exp(y) = 2^k * exp(r), y = k*ln2 + r, |r| <= ln2/2 */
+  /* k = round(y / ln2) */
   long double k = s21_trunc_l(y / S21_LN2 + 0.5L);
-  long double r = y - k * S21_LN2_HI - k * S21_LN2_LO;
 
+  long double r;
+
+#if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 113
+  /* 128-битный long double: x87 FMA не работает с quad precision,
+     __builtin_fmal вызывает segfault. Используем обычное разбитое
+     вычитание — точности и так хватает (exp совпадает с libm). */
+  r = y - k * S21_LN2_HI - k * S21_LN2_LO;
+#else
+  /* 80-битный long double: range reduction через FMA + dd_add.
+     k*LN2_HI и k*LN2_LO через FMA дают точное произведение в виде
+     двух компонент, сохраняя младшие биты, которые иначе теряются
+     при округлении k*LN2_HI. */
+  long double khi = (long double)k * S21_LN2_HI;
+  long double khi_err = __builtin_fmal((long double)k, S21_LN2_HI, -khi);
+
+  long double klo = (long double)k * S21_LN2_LO;
+  long double klo_err = __builtin_fmal((long double)k, S21_LN2_LO, -klo);
+
+  s21_dd r_dd = s21_dd_make(y);
+  s21_dd neg1;
+  neg1.hi = -khi;
+  neg1.lo = -khi_err;
+  s21_dd neg2;
+  neg2.hi = -klo;
+  neg2.lo = -klo_err;
+  r_dd = s21_dd_add(r_dd, neg1);
+  r_dd = s21_dd_add(r_dd, neg2);
+  r = s21_dd_value(r_dd);
+#endif
+
+  /* Ряд Тейлора для exp(r), суммирование в dd */
   long double term = 1.0L;
   s21_dd sum = s21_dd_make(1.0L);
 
