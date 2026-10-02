@@ -2,12 +2,10 @@ CC = gcc
 CFLAGS = -Wall -Wextra -Werror -std=c11
 
 # Опционально: 128-битный long double (только x86, медленнее).
-# Включается так:
-#   make LDBL=-mlong-double-128
+# Обычно используется через цели test-128 / gcov-128 / clean-128.
+# Можно также вручную:
 #   make test LDBL=-mlong-double-128
 #   make gcov_report LDBL=-mlong-double-128
-# Осторожно: libcheck может быть собран под 80-битный long double —
-# тогда тесты начнут падать на сравнениях с эталоном. Проверяй перед сдачей.
 LDBL ?=
 CFLAGS += $(LDBL)
 
@@ -17,7 +15,6 @@ SRC = s21_math.c
 OBJ = s21_math.o
 LIB = s21_math.a
 
-# Файлы, к которым применяется clang-format
 FORMAT_FILES = s21_math.c s21_math.h test.c
 CLANG_FORMAT ?= clang-format
 
@@ -40,17 +37,40 @@ gcov_report: clean
 	lcov -t "s21_math" -o s21_math.info -c -d . --no-external
 	genhtml -o report s21_math.info
 
-# Форматирование файлов по Google Style (см. .clang-format в корне src/)
+# --- 128-битный long double (x86 only) ---
+test-128:
+	$(MAKE) test LDBL=-mlong-double-128
+
+gcov-128:
+	$(MAKE) gcov_report LDBL=-mlong-double-128
+
+clean-128:
+	$(MAKE) clean
+
+# --- Форматирование ---
 clang-format:
 	$(CLANG_FORMAT) -i $(FORMAT_FILES)
 
-# Проверка без изменения файлов — удобно для CI и перед коммитом.
-# Выход с ошибкой, если что-то не отформатировано.
 clang-format-check:
 	$(CLANG_FORMAT) --dry-run --Werror $(FORMAT_FILES)
+
+# --- Проверки памяти (опционально) ---
+valgrind: test
+	valgrind --tool=memcheck --leak-check=yes --show-leak-kinds=definite ./test
+
+asan: clean
+	$(CC) $(CFLAGS) -fsanitize=address -g -c $(SRC) -o $(OBJ)
+	$(CC) $(CFLAGS) -fsanitize=address -g test.c $(OBJ) $(TEST_LIBS) -o test
+	./test
+
+ubsan: clean
+	$(CC) $(CFLAGS) -fsanitize=undefined -g -c $(SRC) -o $(OBJ)
+	$(CC) $(CFLAGS) -fsanitize=undefined -g test.c $(OBJ) $(TEST_LIBS) -o test
+	./test
 
 clean:
 	rm -f $(OBJ) $(LIB) test *.gcda *.gcno *.info
 	rm -rf report
 
-.PHONY: all clean test gcov_report clang-format clang-format-check
+.PHONY: all clean test gcov_report test-128 gcov-128 clean-128 \
+        clang-format clang-format-check valgrind asan ubsan
