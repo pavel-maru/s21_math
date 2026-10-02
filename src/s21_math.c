@@ -239,13 +239,8 @@ long double s21_exp(double x) {
 
   long double r;
 
-#if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 113
-  /* 128-битный long double: x87 FMA не работает с quad precision,
-     __builtin_fmal вызывает segfault. Используем обычное разбитое
-     вычитание — точности и так хватает. */
-  r = y - k * S21_LN2_HI - k * S21_LN2_LO;
-#else
-  /* 80-бит или 64-бит (Apple Silicon): range reduction через FMA + dd_add.
+#if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 64
+  /* 80-битный long double (x86 extended): FMA работает корректно.
      k*LN2_HI и k*LN2_LO через FMA дают точное произведение в виде
      двух компонент, сохраняя младшие биты. */
   long double khi = (long double)k * S21_LN2_HI;
@@ -264,6 +259,13 @@ long double s21_exp(double x) {
   r_dd = s21_dd_add(r_dd, neg1);
   r_dd = s21_dd_add(r_dd, neg2);
   r = s21_dd_value(r_dd);
+#else
+  /* 128-бит (quad, ARM64 Linux) или 64-бит (Apple Silicon).
+     __builtin_fmal несовместим с этими форматами: x87 не работает
+     с quad precision, а fmal из libm ожидает 80-битный ABI
+     и segfault'ит при 64-битном long double.
+     Используем обычное разбитое вычитание — точности хватает. */
+  r = y - k * S21_LN2_HI - k * S21_LN2_LO;
 #endif
 
   /* Ряд Тейлора для exp(r), суммирование в dd */

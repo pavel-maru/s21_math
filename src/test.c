@@ -18,6 +18,29 @@
 #define EPS 1e-12
 #endif
 
+/* При -mlong-double-64 на x86-64 glibc expl/logl/sinl/... скомпилированы
+   под 80-битный ABI и возвращают мусор при 64-битном long double.
+   nextafterl страдает тем же. Используем версии без суффикса l
+   (double-ABI), результат кастуем к long double.
+   На реальном Apple Silicon libm тоже 64-битная, так что там это
+   и не нужно, но макрос всё равно корректен. */
+#if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 53
+#define S21_NEXTAFTER(x, y) nextafter((double)(x), (double)(y))
+#define S21_LIBM_FN(name, x) ((long double)name((double)(x)))
+#else
+#define S21_NEXTAFTER(x, y) nextafterl((x), (y))
+#define S21_LIBM_FN(name, x) name##l(x)
+#endif
+
+/* Печать long double. В 64-битном режиме printf("%Le") читает из стека
+   16 байт (80-битный ABI glibc), а наш long double — 8 байт.
+   Кастуем к double и используем %e. */
+#if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 53
+#define S21_PRINT_LD(x) printf("%-11.2e", (double)(x))
+#else
+#define S21_PRINT_LD(x) printf("%-11.2Le", (x))
+#endif
+
 /* ---------- abs ---------- */
 START_TEST(test_abs_basic) {
   ck_assert_int_eq(s21_abs(0), 0);
@@ -272,9 +295,9 @@ static long double s21_ulp_diff(long double got, long double expected) {
   if (got == expected) return 0.0L;
   if (got != got || expected != expected) return got - expected;
 
-  long double ulp = nextafterl(expected, INFINITY) - expected;
+  long double ulp = S21_NEXTAFTER(expected, INFINITY) - expected;
   if (ulp <= 0.0L || ulp != ulp) {
-    ulp = expected - nextafterl(expected, -INFINITY);
+    ulp = expected - S21_NEXTAFTER(expected, -INFINITY);
   }
   if (ulp <= 0.0L || ulp != ulp) {
     return fabsl(got - expected);
@@ -305,27 +328,27 @@ START_TEST(test_precision_compare) {
 
   printf("%-8s", "exp");
   for (int i = 0; i < n; i++)
-    printf("%-11.2Le", fabsl(expl(args[i]) - s21_exp(args[i])));
+    S21_PRINT_LD(fabsl(S21_LIBM_FN(exp, args[i]) - s21_exp(args[i])));
   printf("\n");
 
   printf("%-8s", "log");
   for (int i = 0; i < n; i++)
-    printf("%-11.2Le", fabsl(logl(args[i]) - s21_log(args[i])));
+    S21_PRINT_LD(fabsl(S21_LIBM_FN(log, args[i]) - s21_log(args[i])));
   printf("\n");
 
   printf("%-8s", "sin");
   for (int i = 0; i < n; i++)
-    printf("%-11.2Le", fabsl(sinl(args[i]) - s21_sin(args[i])));
+    S21_PRINT_LD(fabsl(S21_LIBM_FN(sin, args[i]) - s21_sin(args[i])));
   printf("\n");
 
   printf("%-8s", "cos");
   for (int i = 0; i < n; i++)
-    printf("%-11.2Le", fabsl(cosl(args[i]) - s21_cos(args[i])));
+    S21_PRINT_LD(fabsl(S21_LIBM_FN(cos, args[i]) - s21_cos(args[i])));
   printf("\n");
 
   printf("%-8s", "atan");
   for (int i = 0; i < n; i++)
-    printf("%-11.2Le", fabsl(atanl(args[i]) - s21_atan(args[i])));
+    S21_PRINT_LD(fabsl(S21_LIBM_FN(atan, args[i]) - s21_atan(args[i])));
   printf("\n");
 
   printf("\n=== ULP deviation: |libm - s21_*| / ulp(libm) ===\n");
@@ -338,35 +361,35 @@ START_TEST(test_precision_compare) {
 
   printf("%-8s", "exp");
   for (int i = 0; i < n; i++)
-    printf("%-11.2Le", s21_ulp_diff(s21_exp(args[i]), expl(args[i])));
+    S21_PRINT_LD(s21_ulp_diff(s21_exp(args[i]), S21_LIBM_FN(exp, args[i])));
   printf("\n");
 
   printf("%-8s", "log");
   for (int i = 0; i < n; i++)
-    printf("%-11.2Le", s21_ulp_diff(s21_log(args[i]), logl(args[i])));
+    S21_PRINT_LD(s21_ulp_diff(s21_log(args[i]), S21_LIBM_FN(log, args[i])));
   printf("\n");
 
   printf("%-8s", "sin");
   for (int i = 0; i < n; i++)
-    printf("%-11.2Le", s21_ulp_diff(s21_sin(args[i]), sinl(args[i])));
+    S21_PRINT_LD(s21_ulp_diff(s21_sin(args[i]), S21_LIBM_FN(sin, args[i])));
   printf("\n");
 
   printf("%-8s", "cos");
   for (int i = 0; i < n; i++)
-    printf("%-11.2Le", s21_ulp_diff(s21_cos(args[i]), cosl(args[i])));
+    S21_PRINT_LD(s21_ulp_diff(s21_cos(args[i]), S21_LIBM_FN(cos, args[i])));
   printf("\n");
 
   printf("%-8s", "atan");
   for (int i = 0; i < n; i++)
-    printf("%-11.2Le", s21_ulp_diff(s21_atan(args[i]), atanl(args[i])));
+    S21_PRINT_LD(s21_ulp_diff(s21_atan(args[i]), S21_LIBM_FN(atan, args[i])));
   printf("\n");
 
   /* Формальные проверки — допуск EPS, адаптированный под платформу */
-  ck_assert_ldouble_eq_tol(s21_exp(1.0), expl(1.0), EPS);
-  ck_assert_ldouble_eq_tol(s21_log(2.0), logl(2.0), EPS);
-  ck_assert_ldouble_eq_tol(s21_sin(1.0), sinl(1.0), EPS);
-  ck_assert_ldouble_eq_tol(s21_cos(1.0), cosl(1.0), EPS);
-  ck_assert_ldouble_eq_tol(s21_atan(1.0), atanl(1.0), EPS);
+  ck_assert_ldouble_eq_tol(s21_exp(1.0), S21_LIBM_FN(exp, 1.0), EPS);
+  ck_assert_ldouble_eq_tol(s21_log(2.0), S21_LIBM_FN(log, 2.0), EPS);
+  ck_assert_ldouble_eq_tol(s21_sin(1.0), S21_LIBM_FN(sin, 1.0), EPS);
+  ck_assert_ldouble_eq_tol(s21_cos(1.0), S21_LIBM_FN(cos, 1.0), EPS);
+  ck_assert_ldouble_eq_tol(s21_atan(1.0), S21_LIBM_FN(atan, 1.0), EPS);
 }
 END_TEST
 
