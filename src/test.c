@@ -75,8 +75,6 @@ START_TEST(test_fmod_edge) {
 END_TEST
 
 START_TEST(test_fmod_large) {
-  /* Устойчивость к большим аргументам: xl/yl не влезает в long long.
-     Для 1e30 эталон сам теряет точность, поэтому допуск мягче. */
   ck_assert_ldouble_eq_tol(s21_fmod(1e18, 7.0), fmod(1e18, 7.0), EPS);
   ck_assert_ldouble_eq_tol(s21_fmod(-1e18, 7.0), fmod(-1e18, 7.0), EPS);
   ck_assert_ldouble_eq_tol(s21_fmod(1e30, 3.0), fmod(1e30, 3.0), 1e-6);
@@ -153,7 +151,6 @@ START_TEST(test_pow_edge) {
 END_TEST
 
 START_TEST(test_pow_neg_large_exp) {
-  /* Отрицательное основание + большое целое чётное/нечётное */
   ck_assert_ldouble_eq_tol(s21_pow(-2.0, 31.0), -2147483648.0, EPS);
   ck_assert_ldouble_eq_tol(s21_pow(-2.0, 32.0), 4294967296.0, EPS);
   ck_assert_ldouble_eq_tol(s21_pow(-2.0, 60.0), 1152921504606846976.0,
@@ -263,16 +260,21 @@ END_TEST
 /* ---------- precision comparison ---------- */
 START_TEST(test_precision_compare) {
   /* Информационный тест: печатает |libm - s21_*| для набора аргументов.
-     Полезен для сравнения веток v1-kahan и v2-shewchuk.
-     Формальные проверки — с допуском EPS = 1e-12, чтобы обе ветки
-     проходили тест. */
-  const double args[] = {0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0, 20.0, 100.0};
+     Включает большие аргументы (1e3, 1e6, 1e10) — на них range reduction
+     может терять точность, и это видно по отклонению sin/cos. */
+  const double args[] = {0.5,  1.0,  1.5,  2.0,   3.0,   5.0,
+                         10.0, 20.0, 100.0, 1e3, 1e6, 1e10};
   const int n = (int)(sizeof(args) / sizeof(args[0]));
 
   printf("\n=== Precision: |libm - s21_*| ===\n");
+#if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 113
+  printf("Mode: 128-bit long double (quad precision)\n");
+#else
+  printf("Mode: 80-bit long double (x86 extended)\n");
+#endif
 
   printf("%-8s", "x");
-  for (int i = 0; i < n; i++) printf("%-11.2f", args[i]);
+  for (int i = 0; i < n; i++) printf("%-11.2e", args[i]);
   printf("\n");
 
   printf("%-8s", "exp");
