@@ -2,10 +2,6 @@ CC = gcc
 CFLAGS = -Wall -Wextra -Werror -std=c11
 
 # Опционально: 128-битный long double (только x86, медленнее).
-# Обычно используется через цели test-128 / gcov-128 / clean-128.
-# Можно также вручную:
-#   make test LDBL=-mlong-double-128
-#   make gcov_report LDBL=-mlong-double-128
 LDBL ?=
 CFLAGS += $(LDBL)
 
@@ -15,7 +11,7 @@ SRC = s21_math.c
 OBJ = s21_math.o
 LIB = s21_math.a
 
-FORMAT_FILES = s21_math.c s21_math.h test.c
+FORMAT_FILES = s21_math.c s21_math.h test.c bench.c
 CLANG_FORMAT ?= clang-format
 
 all: $(LIB)
@@ -37,7 +33,7 @@ gcov_report: clean
 	lcov -t "s21_math" -o s21_math.info -c -d . --no-external
 	genhtml -o report s21_math.info
 
-# --- 128-битный long double (x86 only) ---
+# --- 128-битный long double ---
 test-128:
 	$(MAKE) test LDBL=-mlong-double-128
 
@@ -47,6 +43,12 @@ gcov-128:
 clean-128:
 	$(MAKE) clean
 
+# --- Бенчмарк ---
+bench: clean
+	$(CC) $(CFLAGS) -O2 bench.c $(SRC) -lm -o bench
+	./bench
+	rm -f bench
+
 # --- Форматирование ---
 clang-format:
 	$(CLANG_FORMAT) -i $(FORMAT_FILES)
@@ -54,7 +56,7 @@ clang-format:
 clang-format-check:
 	$(CLANG_FORMAT) --dry-run --Werror $(FORMAT_FILES)
 
-# --- Проверки памяти (опционально) ---
+# --- Проверки памяти ---
 valgrind: test
 	valgrind --tool=memcheck --leak-check=yes --show-leak-kinds=definite ./test
 
@@ -69,8 +71,8 @@ ubsan: clean
 	./test
 
 clean:
-	rm -f $(OBJ) $(LIB) test *.gcda *.gcno *.info
+	rm -f $(OBJ) $(LIB) test bench *.gcda *.gcno *.info
 	rm -rf report
 
 .PHONY: all clean test gcov_report test-128 gcov-128 clean-128 \
-        clang-format clang-format-check valgrind asan ubsan
+        clang-format clang-format-check valgrind asan ubsan bench
