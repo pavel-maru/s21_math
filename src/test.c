@@ -1,5 +1,6 @@
 #include <check.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "s21_math.h"
@@ -259,6 +260,55 @@ START_TEST(test_acos_edge) {
 }
 END_TEST
 
+/* ---------- precision comparison ---------- */
+START_TEST(test_precision_compare) {
+  /* Информационный тест: печатает |libm - s21_*| для набора аргументов.
+     Полезен для сравнения веток v1-kahan и v2-shewchuk.
+     Формальные проверки — с допуском EPS = 1e-12, чтобы обе ветки
+     проходили тест. */
+  const double args[] = {0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0, 20.0, 100.0};
+  const int n = (int)(sizeof(args) / sizeof(args[0]));
+
+  printf("\n=== Precision: |libm - s21_*| ===\n");
+
+  printf("%-8s", "x");
+  for (int i = 0; i < n; i++) printf("%-11.2f", args[i]);
+  printf("\n");
+
+  printf("%-8s", "exp");
+  for (int i = 0; i < n; i++)
+    printf("%-11.2Le", fabsl(expl(args[i]) - s21_exp(args[i])));
+  printf("\n");
+
+  printf("%-8s", "log");
+  for (int i = 0; i < n; i++)
+    printf("%-11.2Le", fabsl(logl(args[i]) - s21_log(args[i])));
+  printf("\n");
+
+  printf("%-8s", "sin");
+  for (int i = 0; i < n; i++)
+    printf("%-11.2Le", fabsl(sinl(args[i]) - s21_sin(args[i])));
+  printf("\n");
+
+  printf("%-8s", "cos");
+  for (int i = 0; i < n; i++)
+    printf("%-11.2Le", fabsl(cosl(args[i]) - s21_cos(args[i])));
+  printf("\n");
+
+  printf("%-8s", "atan");
+  for (int i = 0; i < n; i++)
+    printf("%-11.2Le", fabsl(atanl(args[i]) - s21_atan(args[i])));
+  printf("\n");
+
+  /* Формальные проверки — очень щедрый допуск, проходят на обеих ветках */
+  ck_assert_ldouble_eq_tol(s21_exp(1.0), expl(1.0), EPS);
+  ck_assert_ldouble_eq_tol(s21_log(2.0), logl(2.0), EPS);
+  ck_assert_ldouble_eq_tol(s21_sin(1.0), sinl(1.0), EPS);
+  ck_assert_ldouble_eq_tol(s21_cos(1.0), cosl(1.0), EPS);
+  ck_assert_ldouble_eq_tol(s21_atan(1.0), atanl(1.0), EPS);
+}
+END_TEST
+
 /* ---------- suite ---------- */
 Suite *s21_math_suite(void) {
   Suite *s = suite_create("s21_math");
@@ -323,6 +373,9 @@ Suite *s21_math_suite(void) {
   /* acos */
   tcase_add_loop_test(tc, test_acos_loop, 0, 21);
   tcase_add_test(tc, test_acos_edge);
+
+  /* precision comparison */
+  tcase_add_test(tc, test_precision_compare);
 
   suite_add_tcase(s, tc);
   return s;

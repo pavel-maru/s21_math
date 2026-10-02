@@ -25,6 +25,10 @@
 /* exp(y) с |y| > ~11356 переполняет 80-битный long double */
 #define S21_EXP_LIMIT 11356.0L
 
+/* ============================================================
+   Базовые хелперы
+   ============================================================ */
+
 static int s21_isnan_l(long double x) { return x != x; }
 static int s21_isinf_l(long double x) { return x == S21_INF || x == -S21_INF; }
 static long double s21_fabsl(long double x) { return x < 0 ? -x : x; }
@@ -38,7 +42,7 @@ static long double s21_trunc_l(long double x) {
   return (long double)(long long)x;
 }
 
-/* x * 2^n для неотрицательного n (n >= 0 гарантируется вызывающим) */
+/* x * 2^n для неотрицательного n */
 static long double s21_ldexp_int(long double x, long long n) {
   if (n == 0) return x;
   long double result = x;
@@ -58,16 +62,65 @@ static long double s21_reduce_2pi(long double x) {
   return r;
 }
 
-/* Kahan summation: sum += term с компенсацией c */
-#define S21_KAHAN_ADD(sum, c, term) \
-  do {                              \
-    long double _y = (term) - (c);  \
-    long double _t = (sum) + _y;    \
-    (c) = (_t - (sum)) - _y;        \
-    (sum) = _t;                     \
-  } while (0)
+/* ============================================================
+   Расширение из 2 компонент (Shewchuk-style double-double).
+   Точное сложение двух чисел с сохранением потерянных битов.
+   ============================================================ */
 
-/* Бинарное возведение в степень: base^n, n - целое */
+typedef struct {
+  long double hi;
+  long double lo;
+} s21_dd;
+
+/* Точное сложение a + b: s + err == a + b (по математике).
+   Использует порядко-независимый алгоритм 2Sum. */
+static void s21_two_sum(long double a, long double b, long double *s,
+                        long double *err) {
+  long double sum = a + b;
+  long double bv = sum - a;
+  long double av = sum - bv;
+  long double br = b - bv;
+  long double ar = a - av;
+  *s = sum;
+  *err = ar + br;
+}
+
+static s21_dd s21_dd_make(long double x) {
+  s21_dd r;
+  r.hi = x;
+  r.lo = 0.0L;
+  return r;
+}
+
+/* a + b с сохранением потерянных битов. Второй 2Sum — ре-нормализация,
+   чтобы |hi| >= |lo| и компоненты не перекрывались по битам. */
+static s21_dd s21_dd_add(s21_dd a, s21_dd b) {
+  long double s, err;
+  s21_two_sum(a.hi, b.hi, &s, &err);
+  err += a.lo + b.lo;
+
+  long double s2, err2;
+  s21_two_sum(s, err, &s2, &err2);
+
+  s21_dd r;
+  r.hi = s2;
+  r.lo = err2;
+  return r;
+}
+
+/* Умножение на 2^n — точно, покомпонентно */
+static s21_dd s21_dd_ldexp(s21_dd a, long long n) {
+  a.hi = s21_ldexp_int(a.hi, n);
+  a.lo = s21_ldexp_int(a.lo, n);
+  return a;
+}
+
+static long double s21_dd_value(s21_dd a) { return a.hi + a.lo; }
+
+/* ============================================================
+   Бинарное возведение в степень
+   ============================================================ */
+
 static long double s21_powi(long double base, long long n) {
   int neg = (n < 0);
   unsigned long long m =
@@ -82,6 +135,10 @@ static long double s21_powi(long double base, long long n) {
   }
   return neg ? 1.0L / result : result;
 }
+
+/* ============================================================
+   Публичные функции
+   ============================================================ */
 
 int s21_abs(int x) { return x < 0 ? -x : x; }
 
@@ -116,10 +173,7 @@ long double s21_fmod(double x, double y) {
     return S21_NAN;
   if (s21_isinf_l(y)) return x;
 
-  /* Знак результата = знак x; работаем с модулями.
-     Внутренний цикл подбирает максимальное t = y * 2^k <= xl,
-     внешний вычитает такие t, пока xl >= yl.
-     Это устойчиво к большим x, где xl / yl не влезает в long long. */
+  /* Работаем с модулями; устойчиво к большим x, где x/y > LLONG_MAX */
   long double xl = s21_fabsl((long double)x);
   long double yl = s21_fabsl((long double)y);
 
@@ -140,7 +194,6 @@ long double s21_sqrt(double x) {
   long double xl = (long double)x;
   long double res = (xl < 1.0L) ? 1.0L : xl;
 
-  /* Newton–Raphson: квадратичная сходимость */
   for (int i = 0; i < 100; i++) {
     long double next = 0.5L * (res + xl / res);
     if (next == res) break;
@@ -160,26 +213,25 @@ long double s21_exp(double x) {
     sign = 1;
     y = -y;
   }
-
-  if (y > S21_EXP_LIMIT) {
-    return sign ? 0.0L : S21_INF;
-  }
+  if (y > S21_EXP_LIMIT) return sign ? 0.0L : S21_INF;
 
   /* exp(y) = 2^k * exp(r), y = k*ln2 + r, |r| <= ln2/2 */
   long double k = s21_trunc_l(y / S21_LN2 + 0.5L);
   long double r = y - k * S21_LN2_HI - k * S21_LN2_LO;
 
   long double term = 1.0L;
-  long double sum = 1.0L, c = 0.0L;
+  s21_dd sum = s21_dd_make(1.0L);
+
   for (int i = 1; i < S21_MAX_ITER; i++) {
     term *= r / (long double)i;
-    S21_KAHAN_ADD(sum, c, term);
+    sum = s21_dd_add(sum, s21_dd_make(term));
     if (s21_fabsl(term) < S21_EPS) break;
   }
 
-  long double result = s21_ldexp_int(sum, (long long)k);
-  if (sign) result = 1.0L / result;
-  return result;
+  s21_dd res = s21_dd_ldexp(sum, (long long)k);
+  long double out = s21_dd_value(res);
+  if (sign) out = 1.0L / out;
+  return out;
 }
 
 long double s21_log(double x) {
@@ -206,18 +258,24 @@ long double s21_log(double x) {
   long double z = (y - 1.0L) / (y + 1.0L);
   long double z2 = z * z;
   long double term = z;
-  long double sum = 0.0L, c = 0.0L;
+  s21_dd sum = s21_dd_make(0.0L);
 
   for (int i = 1; i < S21_MAX_ITER; i += 2) {
-    S21_KAHAN_ADD(sum, c, term / (long double)i);
+    sum = s21_dd_add(sum, s21_dd_make(term / (long double)i));
     term *= z2;
     if (s21_fabsl(term) < S21_EPS) break;
   }
 
-  /* 2*sum + count*ln2, ln2 разбит на HI + LO */
-  long double result = 2.0L * sum + (long double)count * S21_LN2_HI +
-                       (long double)count * S21_LN2_LO;
-  return result;
+  /* 2*sum + count*ln2_hi + count*ln2_lo — всё через точное сложение */
+  s21_dd twice = s21_dd_make(2.0L * sum.hi);
+  twice.lo = 2.0L * sum.lo;
+
+  s21_dd t1 = s21_dd_make((long double)count * S21_LN2_HI);
+  s21_dd t2 = s21_dd_make((long double)count * S21_LN2_LO);
+
+  s21_dd result = s21_dd_add(twice, t1);
+  result = s21_dd_add(result, t2);
+  return s21_dd_value(result);
 }
 
 long double s21_pow(double base, double exp_val) {
@@ -239,7 +297,6 @@ long double s21_pow(double base, double exp_val) {
     return s21_powi(b, (long long)e_int);
   }
 
-  /* Дробный показатель при отрицательном основании — NaN */
   if (b < 0.0L) return S21_NAN;
 
   return s21_exp(e * s21_log(b));
@@ -251,15 +308,15 @@ long double s21_sin(double x) {
   long double xl = s21_reduce_2pi((long double)x);
 
   long double term = xl;
-  long double sum = xl, c = 0.0L;
+  s21_dd sum = s21_dd_make(xl);
   long double x2 = xl * xl;
 
   for (int i = 3; i < S21_MAX_ITER; i += 2) {
     term *= -x2 / ((long double)(i - 1) * (long double)i);
-    S21_KAHAN_ADD(sum, c, term);
+    sum = s21_dd_add(sum, s21_dd_make(term));
     if (s21_fabsl(term) < S21_EPS) break;
   }
-  return sum;
+  return s21_dd_value(sum);
 }
 
 long double s21_cos(double x) {
@@ -268,15 +325,15 @@ long double s21_cos(double x) {
   long double xl = s21_reduce_2pi((long double)x);
 
   long double term = 1.0L;
-  long double sum = 1.0L, c = 0.0L;
+  s21_dd sum = s21_dd_make(1.0L);
   long double x2 = xl * xl;
 
   for (int i = 2; i < S21_MAX_ITER; i += 2) {
     term *= -x2 / ((long double)(i - 1) * (long double)i);
-    S21_KAHAN_ADD(sum, c, term);
+    sum = s21_dd_add(sum, s21_dd_make(term));
     if (s21_fabsl(term) < S21_EPS) break;
   }
-  return sum;
+  return s21_dd_value(sum);
 }
 
 long double s21_tan(double x) {
@@ -311,20 +368,32 @@ long double s21_atan(double x) {
   }
 
   long double term = xl;
-  long double sum = xl, c = 0.0L;
+  s21_dd sum = s21_dd_make(xl);
   long double x2 = xl * xl;
 
   for (int i = 3; i < S21_MAX_ITER; i += 2) {
     term *= -x2;
-    S21_KAHAN_ADD(sum, c, term / (long double)i);
+    sum = s21_dd_add(sum, s21_dd_make(term / (long double)i));
     if (s21_fabsl(term / (long double)i) < S21_EPS) break;
   }
 
-  for (int i = 0; i < reductions; i++) sum *= 2.0L;
+  /* Умножение на 2^reductions — точно */
+  for (int i = 0; i < reductions; i++) {
+    sum.hi *= 2.0L;
+    sum.lo *= 2.0L;
+  }
 
-  if (invert) sum = S21_PI_2 - sum;
-  if (sign) sum = -sum;
-  return sum;
+  /* Если был invert — выполняем π/2 - sum через точное сложение */
+  if (invert) {
+    s21_dd pi2 = s21_dd_make(S21_PI_2);
+    s21_dd neg;
+    neg.hi = -sum.hi;
+    neg.lo = -sum.lo;
+    sum = s21_dd_add(pi2, neg);
+  }
+
+  long double out = s21_dd_value(sum);
+  return sign ? -out : out;
 }
 
 long double s21_asin(double x) {
