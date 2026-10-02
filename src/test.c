@@ -218,7 +218,7 @@ END_TEST
 START_TEST(test_atan_edge) {
   ck_assert_ldouble_eq_tol(s21_atan(0.0), 0.0, EPS);
   ck_assert_ldouble_eq_tol(s21_atan(1.0), S21_PI / 4.0, EPS);
-  ck_assert_ldouble_eq_tol(s21_atan(-1.0), -S21_PI / 4.0, EPS);
+  ck_assert_ldouble_eq_tol(s21_atan(-1.0), -S21_PI_2 / 2.0, EPS);
   ck_assert_ldouble_eq_tol(s21_atan(1000.0), atan(1000.0), EPS);
   ck_assert_ldouble_eq_tol(s21_atan(INFINITY), S21_PI_2, EPS);
   ck_assert_ldouble_eq_tol(s21_atan(-INFINITY), -S21_PI_2, EPS);
@@ -257,21 +257,46 @@ START_TEST(test_acos_edge) {
 }
 END_TEST
 
+/* ---------- ULP helper ---------- */
+
+/* ULP-разница между got и expected:
+     |got - expected| / ulp(expected)
+   где ulp(x) = nextafterl(x, +inf) - x — расстояние до ближайшего
+   представимого long double в сторону +inf. Возвращает 0 при точном
+   совпадении, 1 при расхождении на один ULP и т.д.
+   Для NaN / inf возвращает NaN. */
+static long double s21_ulp_diff(long double got, long double expected) {
+  if (got == expected) return 0.0L;
+  if (got != got || expected != expected) return got - expected; /* NaN */
+
+  long double ulp = nextafterl(expected, INFINITY) - expected;
+  if (ulp <= 0.0L || ulp != ulp) {
+    ulp = expected - nextafterl(expected, -INFINITY);
+  }
+  if (ulp <= 0.0L || ulp != ulp) {
+    return fabsl(got - expected);
+  }
+  return fabsl(got - expected) / ulp;
+}
+
 /* ---------- precision comparison ---------- */
 START_TEST(test_precision_compare) {
-  /* Информационный тест: печатает |libm - s21_*| для набора аргументов.
-     Включает большие аргументы (1e3, 1e6, 1e10) — на них range reduction
-     может терять точность, и это видно по отклонению sin/cos. */
+  /* Информационный тест: печатает две таблицы — абсолютные отклонения
+     |libm - s21_*| и ULP-отклонения |libm - s21_*| / ulp(libm).
+     ULP-метрика нормирована: 0 = точное совпадение, 1 = расхождение
+     на одно представимое long double число. */
   const double args[] = {0.5,  1.0,  1.5,  2.0,   3.0,   5.0,
                          10.0, 20.0, 100.0, 1e3, 1e6, 1e10};
   const int n = (int)(sizeof(args) / sizeof(args[0]));
 
-  printf("\n=== Precision: |libm - s21_*| ===\n");
 #if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 113
-  printf("Mode: 128-bit long double (quad precision)\n");
+  const char *mode = "128-bit long double (quad precision)";
 #else
-  printf("Mode: 80-bit long double (x86 extended)\n");
+  const char *mode = "80-bit long double (x86 extended)";
 #endif
+
+  printf("\n=== Absolute deviation: |libm - s21_*| ===\n");
+  printf("Mode: %s\n", mode);
 
   printf("%-8s", "x");
   for (int i = 0; i < n; i++) printf("%-11.2e", args[i]);
@@ -300,6 +325,39 @@ START_TEST(test_precision_compare) {
   printf("%-8s", "atan");
   for (int i = 0; i < n; i++)
     printf("%-11.2Le", fabsl(atanl(args[i]) - s21_atan(args[i])));
+  printf("\n");
+
+  printf("\n=== ULP deviation: |libm - s21_*| / ulp(libm) ===\n");
+  printf("Mode: %s\n", mode);
+  printf("0 = exact, 1 = one ULP, 2 = two ULP, ...\n");
+
+  printf("%-8s", "x");
+  for (int i = 0; i < n; i++) printf("%-11.2e", args[i]);
+  printf("\n");
+
+  printf("%-8s", "exp");
+  for (int i = 0; i < n; i++)
+    printf("%-11.2Le", s21_ulp_diff(s21_exp(args[i]), expl(args[i])));
+  printf("\n");
+
+  printf("%-8s", "log");
+  for (int i = 0; i < n; i++)
+    printf("%-11.2Le", s21_ulp_diff(s21_log(args[i]), logl(args[i])));
+  printf("\n");
+
+  printf("%-8s", "sin");
+  for (int i = 0; i < n; i++)
+    printf("%-11.2Le", s21_ulp_diff(s21_sin(args[i]), sinl(args[i])));
+  printf("\n");
+
+  printf("%-8s", "cos");
+  for (int i = 0; i < n; i++)
+    printf("%-11.2Le", s21_ulp_diff(s21_cos(args[i]), cosl(args[i])));
+  printf("\n");
+
+  printf("%-8s", "atan");
+  for (int i = 0; i < n; i++)
+    printf("%-11.2Le", s21_ulp_diff(s21_atan(args[i]), atanl(args[i])));
   printf("\n");
 
   /* Формальные проверки — очень щедрый допуск, проходят на обеих ветках */
