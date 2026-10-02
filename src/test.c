@@ -7,7 +7,16 @@
 
 #define S21_PI 3.14159265358979323846
 #define S21_PI_2 1.57079632679489661923
+
+/* Допуск зависит от платформы:
+     53  — 64-бит long double (Apple Silicon, ~2.2e-16)
+     64  — 80-бит long double (x86-64, ~1.1e-19)
+     113 — 128-бит long double (ARM64 Linux, ~1.9e-34) */
+#if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 53
+#define EPS 1e-10
+#else
 #define EPS 1e-12
+#endif
 
 /* ---------- abs ---------- */
 START_TEST(test_abs_basic) {
@@ -218,7 +227,7 @@ END_TEST
 START_TEST(test_atan_edge) {
   ck_assert_ldouble_eq_tol(s21_atan(0.0), 0.0, EPS);
   ck_assert_ldouble_eq_tol(s21_atan(1.0), S21_PI / 4.0, EPS);
-  ck_assert_ldouble_eq_tol(s21_atan(-1.0), -S21_PI_2 / 2.0, EPS);
+  ck_assert_ldouble_eq_tol(s21_atan(-1.0), -S21_PI / 4.0, EPS);
   ck_assert_ldouble_eq_tol(s21_atan(1000.0), atan(1000.0), EPS);
   ck_assert_ldouble_eq_tol(s21_atan(INFINITY), S21_PI_2, EPS);
   ck_assert_ldouble_eq_tol(s21_atan(-INFINITY), -S21_PI_2, EPS);
@@ -259,15 +268,9 @@ END_TEST
 
 /* ---------- ULP helper ---------- */
 
-/* ULP-разница между got и expected:
-     |got - expected| / ulp(expected)
-   где ulp(x) = nextafterl(x, +inf) - x — расстояние до ближайшего
-   представимого long double в сторону +inf. Возвращает 0 при точном
-   совпадении, 1 при расхождении на один ULP и т.д.
-   Для NaN / inf возвращает NaN. */
 static long double s21_ulp_diff(long double got, long double expected) {
   if (got == expected) return 0.0L;
-  if (got != got || expected != expected) return got - expected; /* NaN */
+  if (got != got || expected != expected) return got - expected;
 
   long double ulp = nextafterl(expected, INFINITY) - expected;
   if (ulp <= 0.0L || ulp != ulp) {
@@ -281,16 +284,14 @@ static long double s21_ulp_diff(long double got, long double expected) {
 
 /* ---------- precision comparison ---------- */
 START_TEST(test_precision_compare) {
-  /* Информационный тест: печатает две таблицы — абсолютные отклонения
-     |libm - s21_*| и ULP-отклонения |libm - s21_*| / ulp(libm).
-     ULP-метрика нормирована: 0 = точное совпадение, 1 = расхождение
-     на одно представимое long double число. */
   const double args[] = {0.5,  1.0,  1.5,   2.0, 3.0, 5.0,
                          10.0, 20.0, 100.0, 1e3, 1e6, 1e10};
   const int n = (int)(sizeof(args) / sizeof(args[0]));
 
 #if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 113
   const char *mode = "128-bit long double (quad precision)";
+#elif defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 53
+  const char *mode = "64-bit long double (double)";
 #else
   const char *mode = "80-bit long double (x86 extended)";
 #endif
@@ -360,7 +361,7 @@ START_TEST(test_precision_compare) {
     printf("%-11.2Le", s21_ulp_diff(s21_atan(args[i]), atanl(args[i])));
   printf("\n");
 
-  /* Формальные проверки — очень щедрый допуск, проходят на обеих ветках */
+  /* Формальные проверки — допуск EPS, адаптированный под платформу */
   ck_assert_ldouble_eq_tol(s21_exp(1.0), expl(1.0), EPS);
   ck_assert_ldouble_eq_tol(s21_log(2.0), logl(2.0), EPS);
   ck_assert_ldouble_eq_tol(s21_sin(1.0), sinl(1.0), EPS);
@@ -374,67 +375,36 @@ Suite *s21_math_suite(void) {
   Suite *s = suite_create("s21_math");
   TCase *tc = tcase_create("core");
 
-  /* abs */
   tcase_add_test(tc, test_abs_basic);
-
-  /* fabs */
   tcase_add_loop_test(tc, test_fabs_loop, 0, 40);
-
-  /* ceil */
   tcase_add_loop_test(tc, test_ceil_loop, 0, 40);
   tcase_add_test(tc, test_ceil_edge);
-
-  /* floor */
   tcase_add_loop_test(tc, test_floor_loop, 0, 40);
   tcase_add_test(tc, test_floor_edge);
-
-  /* fmod */
   tcase_add_loop_test(tc, test_fmod_loop, 0, 25);
   tcase_add_test(tc, test_fmod_edge);
   tcase_add_test(tc, test_fmod_large);
-
-  /* sqrt */
   tcase_add_loop_test(tc, test_sqrt_loop, 0, 30);
   tcase_add_test(tc, test_sqrt_edge);
-
-  /* exp */
   tcase_add_loop_test(tc, test_exp_loop, 0, 30);
   tcase_add_test(tc, test_exp_edge);
-
-  /* log */
   tcase_add_loop_test(tc, test_log_loop, 0, 30);
   tcase_add_test(tc, test_log_edge);
-
-  /* pow */
   tcase_add_loop_test(tc, test_pow_loop, 0, 20);
   tcase_add_test(tc, test_pow_edge);
   tcase_add_test(tc, test_pow_neg_large_exp);
-
-  /* sin */
   tcase_add_loop_test(tc, test_sin_loop, 0, 40);
   tcase_add_test(tc, test_sin_edge);
-
-  /* cos */
   tcase_add_loop_test(tc, test_cos_loop, 0, 40);
   tcase_add_test(tc, test_cos_edge);
-
-  /* tan */
   tcase_add_loop_test(tc, test_tan_loop, 0, 20);
   tcase_add_test(tc, test_tan_edge);
-
-  /* atan */
   tcase_add_loop_test(tc, test_atan_loop, 0, 40);
   tcase_add_test(tc, test_atan_edge);
-
-  /* asin */
   tcase_add_loop_test(tc, test_asin_loop, 0, 21);
   tcase_add_test(tc, test_asin_edge);
-
-  /* acos */
   tcase_add_loop_test(tc, test_acos_loop, 0, 21);
   tcase_add_test(tc, test_acos_edge);
-
-  /* precision comparison */
   tcase_add_test(tc, test_precision_compare);
 
   suite_add_tcase(s, tc);

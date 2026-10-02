@@ -1,5 +1,16 @@
 #include "s21_math.h"
 
+/* Определяем разрядность long double.
+   __LDBL_MANT_DIG__ значения:
+     53  — 64-бит (Apple Silicon, ARM64 macOS, -mlong-double-64)
+     64  — 80-бит (x86-64 extended precision)
+     113 — 128-бит (IEEE 754 quad, ARM64 Linux) */
+#if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 53
+#define S21_LDBL_IS_DOUBLE 1
+#else
+#define S21_LDBL_IS_DOUBLE 0
+#endif
+
 #define S21_PI 3.1415926535897932384626433832795028841971693993751L
 #define S21_PI_2 1.5707963267948966192313216916397514420985846996876L
 #define S21_2PI 6.2831853071795864769252867665590057683943387987502L
@@ -13,17 +24,25 @@
 #define S21_LN2_HI 0.693147180559945309417232121458176568L
 #define S21_LN2_LO 7.5500134360255254121e-33L
 
+/* Параметры зависят от точности long double.
+   На Apple Silicon long double == double, эпсилон ~2.2e-16,
+   поэтому порог сходимости поднят до 1e-15, а лимит exp
+   снижен до ln(DBL_MAX) ≈ 709.78 (переполнение наступает раньше). */
+#if S21_LDBL_IS_DOUBLE
+#define S21_EPS 1e-15L
+#define S21_MAX_ITER 100
+#define S21_EXP_LIMIT 709.0L
+#else
 #define S21_EPS 1e-25L
 #define S21_MAX_ITER 300
+#define S21_EXP_LIMIT 11356.0L
+#endif
 
 #define S21_INF __builtin_infl()
 #define S21_NAN __builtin_nanl("")
 
 #define S21_LL_MAX 9223372036854775807.0L
 #define S21_LL_MIN -9223372036854775808.0L
-
-/* exp(y) с |y| > ~11356 переполняет 80-битный long double */
-#define S21_EXP_LIMIT 11356.0L
 
 /* ============================================================
    Базовые хелперы
@@ -53,13 +72,6 @@ static long double s21_ldexp_int(long double x, long long n) {
     n >>= 1;
   }
   return result;
-}
-
-/* Приведение x по модулю 2*pi с использованием разбитой константы */
-static long double s21_reduce_2pi(long double x) {
-  long double n = s21_trunc_l(x / S21_2PI);
-  long double r = ((x - n * S21_2PI_HI) - n * S21_2PI_LO);
-  return r;
 }
 
 /* ============================================================
@@ -116,6 +128,13 @@ static s21_dd s21_dd_ldexp(s21_dd a, long long n) {
 }
 
 static long double s21_dd_value(s21_dd a) { return a.hi + a.lo; }
+
+/* Приведение x по модулю 2*pi с использованием разбитой константы */
+static long double s21_reduce_2pi(long double x) {
+  long double n = s21_trunc_l(x / S21_2PI);
+  long double r = ((x - n * S21_2PI_HI) - n * S21_2PI_LO);
+  return r;
+}
 
 /* ============================================================
    Бинарное возведение в степень
@@ -223,13 +242,12 @@ long double s21_exp(double x) {
 #if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 113
   /* 128-битный long double: x87 FMA не работает с quad precision,
      __builtin_fmal вызывает segfault. Используем обычное разбитое
-     вычитание — точности и так хватает (exp совпадает с libm). */
+     вычитание — точности и так хватает. */
   r = y - k * S21_LN2_HI - k * S21_LN2_LO;
 #else
-  /* 80-битный long double: range reduction через FMA + dd_add.
+  /* 80-бит или 64-бит (Apple Silicon): range reduction через FMA + dd_add.
      k*LN2_HI и k*LN2_LO через FMA дают точное произведение в виде
-     двух компонент, сохраняя младшие биты, которые иначе теряются
-     при округлении k*LN2_HI. */
+     двух компонент, сохраняя младшие биты. */
   long double khi = (long double)k * S21_LN2_HI;
   long double khi_err = __builtin_fmal((long double)k, S21_LN2_HI, -khi);
 
