@@ -55,13 +55,6 @@ static long double s21_ldexp_int(long double x, long long n) {
   return result;
 }
 
-/* Приведение x по модулю 2*pi с использованием разбитой константы */
-static long double s21_reduce_2pi(long double x) {
-  long double n = s21_trunc_l(x / S21_2PI);
-  long double r = ((x - n * S21_2PI_HI) - n * S21_2PI_LO);
-  return r;
-}
-
 /* ============================================================
    Расширение из 2 компонент (Shewchuk-style double-double).
    Точное сложение двух чисел с сохранением потерянных битов.
@@ -116,6 +109,37 @@ static s21_dd s21_dd_ldexp(s21_dd a, long long n) {
 }
 
 static long double s21_dd_value(s21_dd a) { return a.hi + a.lo; }
+
+/* Приведение x по модулю 2*pi с использованием разбитой константы.
+   В 80-битном режиме применяется FMA для точного вычисления
+   n*2π_hi и n*2π_lo, затем вычитание через dd_add — это сохраняет
+   младшие биты, которые иначе терялись бы при округлении n*2π_hi.
+   В 128-битном режиме FMA недоступна (x87 не поддерживает quad),
+   используется обычное разбитое вычитание. */
+static long double s21_reduce_2pi(long double x) {
+  long double n = s21_trunc_l(x / S21_2PI);
+
+#if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 113
+  return ((x - n * S21_2PI_HI) - n * S21_2PI_LO);
+#else
+  long double hi = n * S21_2PI_HI;
+  long double hi_err = __builtin_fmal(n, S21_2PI_HI, -hi);
+
+  long double lo = n * S21_2PI_LO;
+  long double lo_err = __builtin_fmal(n, S21_2PI_LO, -lo);
+
+  s21_dd r_dd = s21_dd_make(x);
+  s21_dd neg1;
+  neg1.hi = -hi;
+  neg1.lo = -hi_err;
+  s21_dd neg2;
+  neg2.hi = -lo;
+  neg2.lo = -lo_err;
+  r_dd = s21_dd_add(r_dd, neg1);
+  r_dd = s21_dd_add(r_dd, neg2);
+  return s21_dd_value(r_dd);
+#endif
+}
 
 /* ============================================================
    Бинарное возведение в степень
