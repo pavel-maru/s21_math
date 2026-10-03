@@ -1,5 +1,10 @@
 # s21_math
 
+> **Status:** 🟢 **Complete (v1.0.0, 2026-10-03).**
+> Собственная реализация `<math.h>` на C11 с Shewchuk double-double,
+> FMA-based range reduction и поддержкой трёх платформенных режимов.
+> 454 теста, 100% покрытие, 9 задокументированных экспериментов.
+
 Собственная реализация стандартной библиотеки `<math.h>` на языке C (C11).
 Учебный проект Школы 21 (School 21 / École 42), развитый в пет-проект
 с несколькими подходами к повышению точности вычислений и поддержкой
@@ -156,6 +161,13 @@ make gcov-128     # покрытие в 128-битном режиме
 make clean-128    # очистка после 128-битного прогона
 ```
 
+Эквивалентно флагам:
+
+```sh
+make test LDBL=-mlong-double-128
+make gcov_report LDBL=-mlong-double-128
+```
+
 ### Что даёт 128-битный режим
 
 - **Точность:** ~33 значащие цифры вместо ~18.
@@ -163,6 +175,9 @@ make clean-128    # очистка после 128-битного прогона
   падает до нуля (0 ULP), включая `sin(1e10)` и `cos(1e10)`.
 - **Совместимость:** работает только на x86/x86-64 (gcc).
   На ARM64 macOS `-mlong-double-128` не поддерживается.
+- **Совместимость с libcheck:** может конфликтовать. Если `libcheck`
+  собран под 80-битный `long double`, сравнения в тестах могут падать
+  на границах допуска.
 
 ## Структура проекта
 
@@ -183,9 +198,9 @@ make clean-128    # очистка после 128-битного прогона
 ## Ветки
 
 - **`main`** — финальная версия: Shewchuk double-double,
-  FMA-based range reduction, **dd-based range reduction для sin/cos**,
-  поддержка 80-, 128- и 64-битного `long double`, ULP-метрика,
-  бенчмарк, 454 checks, покрытие 100%.
+  FMA-based range reduction для `exp`, **dd-based range reduction
+  для `sin`/`cos`**, поддержка 80-, 128- и 64-битного `long double`,
+  ULP-метрика, бенчмарк, 454 checks, покрытие 100%.
 - **`v1-kahan`** — компенсационное суммирование по Кэхэну.
 - **`v2-shewchuk`** — Shewchuk double-double.
 - **`v3-128bit-ldbl`** — 128-битный `long double`.
@@ -197,6 +212,12 @@ make clean-128    # очистка после 128-битного прогона
 - **`v8-arm-port`** — ARM64 / Apple Silicon.
 - **`v9-dd-for-double`** — dd-based range reduction для `sin`/`cos`,
   решает argument reduction problem на всех платформах.
+
+Историю можно посмотреть так:
+
+```sh
+git log --oneline --graph --decorate --all
+```
 
 ## Как устроено внутри
 
@@ -214,6 +235,16 @@ make clean-128    # очистка после 128-битного прогона
 | `asin` | `atan(x / √(1-x²))` |
 | `acos` | `π/2 − asin(x)` |
 | `fmod` | пошаговое вычитание с удвоением |
+
+### Вспомогательные хелперы
+
+- `s21_isnan_l`, `s21_isinf_l` — детект NaN и INF.
+- `s21_fabsl` — `|x|` для `long double`.
+- `s21_trunc_l` — отбрасывание дробной части.
+- `s21_ldexp_int` — быстрое умножение на `2^n`.
+- `s21_reduce_2pi` — dd-based приведение аргумента по модулю `2π`.
+- `s21_powi` — точное бинарное возведение в целую степень.
+- `s21_ulp_diff` (в `test.c`) — ULP-разница с эталоном `libm`.
 
 ### Shewchuk double-double
 
@@ -270,6 +301,13 @@ static long double s21_reduce_2pi(long double x) {
 - 64-бит: `1e10·(2.22e-16)² ≈ 5e-22`
 
 ## Точность вычислений
+
+- **Машинный эпсилон** `long double` (80 бит): ≈ 1.08e-19.
+- **Машинный эпсилон** `long double` (128 бит): ≈ 1.93e-34.
+- **Машинный эпсилон** `double` (64 бита): ≈ 2.22e-16.
+- **Требование задания**: 16 значащих цифр, 6 знаков после запятой.
+- **Тесты проверяют**: `EPS = 1e-12` (80/128-бит) или `1e-10`
+  (64-бит).
 
 ### ULP-метрика
 
@@ -466,6 +504,9 @@ make gcov_report
 
 ### Проверка памяти
 
+Библиотека не использует динамическую память, поэтому утечек
+быть не может. Для формальной проверки:
+
 ```sh
 make valgrind
 make asan
@@ -497,9 +538,18 @@ sh run.sh
 ```
 
 Три этапа: Style test, Build test, Test. Все три должны
-быть зелёными.
+быть зелёными:
+
+```
+Style test result: 1
+Build result: 1
+Test result: OK
+1
+```
 
 ## Структурное программирование
+
+Проект следует принципам Дейкстры:
 
 - ✅ Нет `goto`.
 - ✅ Только `if`, `while`, `for`, `return`.
@@ -508,15 +558,24 @@ sh run.sh
 - ✅ Нет глобальных переменных.
 - ✅ Не более одного `break` на цикл.
 - ✅ Размер функций ≤ 50 строк.
-- ⚠️ Ранние `return` используются как проверки аргументов.
+- ⚠️ Ранние `return` используются как проверки аргументов
+  (разрешено исключением принципа 6).
 
 ## Полезные ссылки
 
-- **Google C++ Style Guide**: https://google.github.io/styleguide/cppguide.html
+- **Google C++ Style Guide** (применяется к C):
+  https://google.github.io/styleguide/cppguide.html
 - **Check framework**: https://libcheck.github.io/check/
-- **Shewchuk, "Adaptive Precision Floating-Point Arithmetic..."**: https://www.cs.cmu.edu/~quake/robust.html
-- **Kahan summation**: https://en.wikipedia.org/wiki/Kahan_summation_algorithm
-- **What Every Computer Scientist Should Know About Floating-Point Arithmetic**: https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html
+- **Shewchuk, "Adaptive Precision Floating-Point Arithmetic and
+  Fast Robust Geometric Predicates"** (1996):
+  https://www.cs.cmu.edu/~quake/robust.html
+- **Kahan summation**:
+  https://en.wikipedia.org/wiki/Kahan_summation_algorithm
+- **What Every Computer Scientist Should Know About Floating-Point
+  Arithmetic** (David Goldberg, 1991):
+  https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html
+- **Apple Silicon long double**:
+  https://developer.apple.com/documentation/xcode/porting-your-macos-apps-to-apple-silicon
 
 ## Репозитории
 
