@@ -76,7 +76,6 @@ static long double s21_ldexp_int(long double x, long long n) {
 
 /* ============================================================
    Расширение из 2 компонент (Shewchuk-style double-double).
-   Точное сложение двух чисел с сохранением потерянных битов.
    ============================================================ */
 
 typedef struct {
@@ -84,8 +83,7 @@ typedef struct {
   long double lo;
 } s21_dd;
 
-/* Точное сложение a + b: s + err == a + b (по математике).
-   Использует порядко-независимый алгоритм 2Sum. */
+/* Точное сложение a + b: s + err == a + b (по математике). */
 static void s21_two_sum(long double a, long double b, long double *s,
                         long double *err) {
   long double sum = a + b;
@@ -97,6 +95,27 @@ static void s21_two_sum(long double a, long double b, long double *s,
   *err = ar + br;
 }
 
+/* Точное произведение a·b: p + err == a·b (по математике).
+   Использует FMA / fma. В 64-битном режиме (Apple Silicon)
+   использует fma для double, так как fmal несовместима с ABI
+   glibc при -mlong-double-64. */
+static void s21_two_product(long double a, long double b, long double *p,
+                            long double *err) {
+#if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 53
+  /* long double == double: fma для double */
+  double a_d = (double)a;
+  double b_d = (double)b;
+  double p_d = a_d * b_d;
+  double err_d = __builtin_fma(a_d, b_d, -p_d);
+  *p = (long double)p_d;
+  *err = (long double)err_d;
+#else
+  /* 80-бит или 128-бит: fmal работает корректно */
+  *p = a * b;
+  *err = __builtin_fmal(a, b, -*p);
+#endif
+}
+
 static s21_dd s21_dd_make(long double x) {
   s21_dd r;
   r.hi = x;
@@ -104,8 +123,7 @@ static s21_dd s21_dd_make(long double x) {
   return r;
 }
 
-/* a + b с сохранением потерянных битов. Второй 2Sum — ре-нормализация,
-   чтобы |hi| >= |lo| и компоненты не перекрывались по битам. */
+/* a + b с сохранением потерянных битов и ре-нормализацией. */
 static s21_dd s21_dd_add(s21_dd a, s21_dd b) {
   long double s, err;
   s21_two_sum(a.hi, b.hi, &s, &err);
@@ -120,7 +138,6 @@ static s21_dd s21_dd_add(s21_dd a, s21_dd b) {
   return r;
 }
 
-/* Умножение на 2^n — точно, покомпонентно */
 static s21_dd s21_dd_ldexp(s21_dd a, long long n) {
   a.hi = s21_ldexp_int(a.hi, n);
   a.lo = s21_ldexp_int(a.lo, n);
@@ -129,11 +146,36 @@ static s21_dd s21_dd_ldexp(s21_dd a, long long n) {
 
 static long double s21_dd_value(s21_dd a) { return a.hi + a.lo; }
 
-/* Приведение x по модулю 2*pi с использованием разбитой константы */
+/* Приведение x по модулю 2π с использованием double-double.
+
+   Ключевая идея: вычитание x − n·2π выполняется в dd, чтобы
+   сохранить младшие биты. Это критично для sin/cos на больших
+   аргументах, где x и n·2π близки, а разность мала.
+
+   Раньше вычитание шло в long double, что давало ошибку
+   ~|x|·ε ≈ 1e10·1e-16 = 1e-6 в остатке r и приводило к ULP ~1e9
+   на sin(1e10) в 64-битном режиме. Теперь ошибка ~1e10·ε² ≈ 1e-22. */
 static long double s21_reduce_2pi(long double x) {
+  /* n = trunc(x / 2π) */
   long double n = s21_trunc_l(x / S21_2PI);
-  long double r = ((x - n * S21_2PI_HI) - n * S21_2PI_LO);
-  return r;
+
+  /* Вычислим n·2π в dd: n·2π = n·2π_hi + n·2π_lo
+     n·2π_hi — точное произведение через two_product */
+  long double p_hi, p_err;
+  s21_two_product(n, S21_2PI_HI, &p_hi, &p_err);
+  long double p_lo = n * S21_2PI_LO;
+
+  s21_dd n_2pi;
+  s21_two_sum(p_hi, p_err + p_lo, &n_2pi.hi, &n_2pi.lo);
+
+  /* r = x − n·2π в dd */
+  s21_dd x_dd = s21_dd_make(x);
+  s21_dd neg;
+  neg.hi = -n_2pi.hi;
+  neg.lo = -n_2pi.lo;
+  s21_dd r_dd = s21_dd_add(x_dd, neg);
+
+  return s21_dd_value(r_dd);
 }
 
 /* ============================================================
@@ -192,7 +234,6 @@ long double s21_fmod(double x, double y) {
     return S21_NAN;
   if (s21_isinf_l(y)) return x;
 
-  /* Работаем с модулями; устойчиво к большим x, где x/y > LLONG_MAX */
   long double xl = s21_fabsl((long double)x);
   long double yl = s21_fabsl((long double)y);
 
@@ -234,15 +275,12 @@ long double s21_exp(double x) {
   }
   if (y > S21_EXP_LIMIT) return sign ? 0.0L : S21_INF;
 
-  /* k = round(y / ln2) */
   long double k = s21_trunc_l(y / S21_LN2 + 0.5L);
 
   long double r;
 
 #if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 64
-  /* 80-битный long double (x86 extended): FMA работает корректно.
-     k*LN2_HI и k*LN2_LO через FMA дают точное произведение в виде
-     двух компонент, сохраняя младшие биты. */
+  /* 80-бит: FMA-путь через __builtin_fmal */
   long double khi = (long double)k * S21_LN2_HI;
   long double khi_err = __builtin_fmal((long double)k, S21_LN2_HI, -khi);
 
@@ -260,15 +298,10 @@ long double s21_exp(double x) {
   r_dd = s21_dd_add(r_dd, neg2);
   r = s21_dd_value(r_dd);
 #else
-  /* 128-бит (quad, ARM64 Linux) или 64-бит (Apple Silicon).
-     __builtin_fmal несовместим с этими форматами: x87 не работает
-     с quad precision, а fmal из libm ожидает 80-битный ABI
-     и segfault'ит при 64-битном long double.
-     Используем обычное разбитое вычитание — точности хватает. */
+  /* 128-бит или 64-бит: обычное разбитое вычитание */
   r = y - k * S21_LN2_HI - k * S21_LN2_LO;
 #endif
 
-  /* Ряд Тейлора для exp(r), суммирование в dd */
   long double term = 1.0L;
   s21_dd sum = s21_dd_make(1.0L);
 
@@ -294,7 +327,6 @@ long double s21_log(double x) {
   long double y = (long double)x;
   long long count = 0;
 
-  /* Приведение y к [1, 2) */
   while (y >= 2.0L) {
     y /= 2.0L;
     count++;
@@ -304,7 +336,6 @@ long double s21_log(double x) {
     count--;
   }
 
-  /* z = (y-1)/(y+1) ∈ [0, 1/3) -> быстрая сходимость */
   long double z = (y - 1.0L) / (y + 1.0L);
   long double z2 = z * z;
   long double term = z;
@@ -316,7 +347,6 @@ long double s21_log(double x) {
     if (s21_fabsl(term) < S21_EPS) break;
   }
 
-  /* 2*sum + count*ln2_hi + count*ln2_lo — всё через точное сложение */
   s21_dd twice = s21_dd_make(2.0L * sum.hi);
   twice.lo = 2.0L * sum.lo;
 
@@ -340,8 +370,6 @@ long double s21_pow(double base, double exp_val) {
     return 0.0L;
   }
 
-  /* Целый показатель — точное бинарное возведение, без exp/log.
-     Порог 1e18 — защита от переполнения long long при приведении. */
   long double e_int = s21_trunc_l(e);
   if (e_int == e && s21_fabsl(e) < 1e18L) {
     return s21_powi(b, (long long)e_int);
@@ -410,7 +438,6 @@ long double s21_atan(double x) {
     xl = 1.0L / xl;
   }
 
-  /* Argument reduction: atan(x) = 2*atan(x / (1 + sqrt(1+x^2))) */
   int reductions = 0;
   while (xl > 0.1L && reductions < 8) {
     xl = xl / (1.0L + s21_sqrt(1.0L + xl * xl));
@@ -427,13 +454,11 @@ long double s21_atan(double x) {
     if (s21_fabsl(term / (long double)i) < S21_EPS) break;
   }
 
-  /* Умножение на 2^reductions — точно */
   for (int i = 0; i < reductions; i++) {
     sum.hi *= 2.0L;
     sum.lo *= 2.0L;
   }
 
-  /* Если был invert — выполняем π/2 - sum через точное сложение */
   if (invert) {
     s21_dd pi2 = s21_dd_make(S21_PI_2);
     s21_dd neg;
