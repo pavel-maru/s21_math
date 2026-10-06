@@ -79,7 +79,7 @@ static long double s21_trunc_l(long double x) {
   return x;
 }
 
-/* Нечётное целое? Используется в s21_pow для случая base = -0.0.
+/* Нечётное целое? Используется в s21_pow_l для случая base = -0.0.
    Для |e| >= 2^63 знак показателя определить нельзя без потери
    точности (long double там уже не различает чётные/нечётные),
    поэтому возвращаем 0. */
@@ -215,23 +215,24 @@ static long double s21_powi(long double base, long long n) {
 }
 
 /* ============================================================
-   Публичные функции
+   Внутренние _l-реализации.
+
+   Публичный API принимает double (по требованию задания), но
+   внутри всё считается в long double. Иначе при вызове
+   s21_sqrt_l(1.0L + xl*xl) из atan аргумент усекается до double,
+   и ошибка растёт на много порядков.
+
+   Публичные функции ниже — тонкие обёртки над этими _l-версиями.
    ============================================================ */
 
-int s21_abs(int x) {
-  if (x >= 0) return x;
-  return (int)(-(unsigned)x);
-}
-
-long double s21_fabs(double x) {
-  if (x < 0) return -(long double)x;
+static long double s21_fabs_l(long double x) {
+  if (x < 0) return -x;
   if (x == 0) return 0.0L;
-  return (long double)x;
+  return x;
 }
 
-long double s21_ceil(double x) {
-  if (s21_isnan_l(x) || s21_isinf_l(x)) return x;
-  long double y = (long double)x;
+static long double s21_ceil_l(long double y) {
+  if (s21_isnan_l(y) || s21_isinf_l(y)) return y;
   if (y == 0.0L) return y;
   if (y >= S21_LL_MAX || y <= S21_LL_MIN) return y;
   long long i = (long long)y;
@@ -240,9 +241,8 @@ long double s21_ceil(double x) {
   return (long double)i;
 }
 
-long double s21_floor(double x) {
-  if (s21_isnan_l(x) || s21_isinf_l(x)) return x;
-  long double y = (long double)x;
+static long double s21_floor_l(long double y) {
+  if (s21_isnan_l(y) || s21_isinf_l(y)) return y;
   if (y == 0.0L) return y;
   if (y >= S21_LL_MAX || y <= S21_LL_MIN) return y;
   long long i = (long long)y;
@@ -251,14 +251,14 @@ long double s21_floor(double x) {
   return (long double)i;
 }
 
-long double s21_fmod(double x, double y) {
-  if (s21_isnan_l(x) || s21_isnan_l(y) || s21_isinf_l(x) || y == 0.0)
+static long double s21_fmod_l(long double x, long double y) {
+  if (s21_isnan_l(x) || s21_isnan_l(y) || s21_isinf_l(x) || y == 0.0L)
     return S21_NAN;
   if (s21_isinf_l(y)) return x;
-  if (x == 0.0) return (long double)x;
+  if (x == 0.0L) return x;
 
-  long double xl = s21_fabsl((long double)x);
-  long double yl = s21_fabsl((long double)y);
+  long double xl = s21_fabsl(x);
+  long double yl = s21_fabsl(y);
 
   while (xl >= yl) {
     long double t = yl;
@@ -266,23 +266,21 @@ long double s21_fmod(double x, double y) {
     xl -= t;
   }
 
-  return ((long double)x < 0) ? -xl : xl;
+  return (x < 0) ? -xl : xl;
 }
 
-long double s21_sqrt(double x) {
+static long double s21_sqrt_l(long double x) {
   if (s21_isnan_l(x)) return x;
   if (x < 0) return S21_NAN;
   if (x == 0 || s21_isinf_l(x)) return x;
 
-  long double xl = (long double)x;
-
   int scale = 0;
-  while (xl < 0.25L) { xl *= 4.0L; scale++; }
-  while (xl > 1.0L)  { xl *= 0.25L; scale--; }
+  while (x < 0.25L) { x *= 4.0L; scale++; }
+  while (x > 1.0L)  { x *= 0.25L; scale--; }
 
   long double res = 0.75L;
   for (int i = 0; i < 60; i++) {
-    long double next = 0.5L * (res + xl / res);
+    long double next = 0.5L * (res + x / res);
     if (next == res) break;
     res = next;
   }
@@ -290,12 +288,12 @@ long double s21_sqrt(double x) {
   return s21_ldexp_int(res, -(long long)scale);
 }
 
-long double s21_exp(double x) {
+static long double s21_exp_l(long double x) {
   if (s21_isnan_l(x)) return x;
   if (s21_isinf_l(x)) return x > 0 ? S21_INF : 0.0L;
-  if (x == 0.0) return 1.0L;
+  if (x == 0.0L) return 1.0L;
 
-  long double y = (long double)x;
+  long double y = x;
   int sign = 0;
   if (y < 0) {
     sign = 1;
@@ -343,14 +341,14 @@ long double s21_exp(double x) {
   return out;
 }
 
-long double s21_log(double x) {
+static long double s21_log_l(long double x) {
   if (s21_isnan_l(x)) return x;
   if (x < 0) return S21_NAN;
   if (x == 0) return -S21_INF;
   if (s21_isinf_l(x)) return x;
-  if (x == 1.0) return 0.0L;
+  if (x == 1.0L) return 0.0L;
 
-  long double y = (long double)x;
+  long double y = x;
   long long count = 0;
 
   while (y >= 2.0L) {
@@ -387,12 +385,9 @@ long double s21_log(double x) {
   return s21_dd_value(result);
 }
 
-long double s21_pow(double base, double exp_val) {
-  if (s21_isnan_l(base) || s21_isnan_l(exp_val)) return S21_NAN;
-  if (exp_val == 0.0) return 1.0L;
-
-  long double b = (long double)base;
-  long double e = (long double)exp_val;
+static long double s21_pow_l(long double b, long double e) {
+  if (s21_isnan_l(b) || s21_isnan_l(e)) return S21_NAN;
+  if (e == 0.0L) return 1.0L;
 
   if (b == 0.0L) {
     int b_neg = s21_signbit_l(b);
@@ -409,13 +404,13 @@ long double s21_pow(double base, double exp_val) {
 
   if (b < 0.0L) return S21_NAN;
 
-  return s21_exp(e * s21_log(b));
+  return s21_exp_l(e * s21_log_l(b));
 }
 
-long double s21_sin(double x) {
+static long double s21_sin_l(long double x) {
   if (s21_isnan_l(x) || s21_isinf_l(x)) return S21_NAN;
 
-  long double xl = s21_reduce_2pi((long double)x);
+  long double xl = s21_reduce_2pi(x);
 
   long double term = xl;
   s21_dd sum = s21_dd_make(xl);
@@ -429,10 +424,10 @@ long double s21_sin(double x) {
   return s21_dd_value(sum);
 }
 
-long double s21_cos(double x) {
+static long double s21_cos_l(long double x) {
   if (s21_isnan_l(x) || s21_isinf_l(x)) return S21_NAN;
 
-  long double xl = s21_reduce_2pi((long double)x);
+  long double xl = s21_reduce_2pi(x);
 
   long double term = 1.0L;
   s21_dd sum = s21_dd_make(1.0L);
@@ -446,18 +441,17 @@ long double s21_cos(double x) {
   return s21_dd_value(sum);
 }
 
-long double s21_tan(double x) {
-  long double s = s21_sin(x);
-  long double c = s21_cos(x);
+static long double s21_tan_l(long double x) {
+  long double s = s21_sin_l(x);
+  long double c = s21_cos_l(x);
   if (c == 0.0L) return S21_INF;
   return s / c;
 }
 
-long double s21_atan(double x) {
-  if (s21_isnan_l(x)) return x;
-  if (s21_isinf_l(x)) return x > 0 ? S21_PI_2 : -S21_PI_2;
+static long double s21_atan_l(long double xl) {
+  if (s21_isnan_l(xl)) return xl;
+  if (s21_isinf_l(xl)) return xl > 0 ? S21_PI_2 : -S21_PI_2;
 
-  long double xl = (long double)x;
   int sign = 0;
   if (xl < 0) {
     sign = 1;
@@ -472,7 +466,7 @@ long double s21_atan(double x) {
 
   int reductions = 0;
   while (xl > 0.1L && reductions < 8) {
-    xl = xl / (1.0L + s21_sqrt(1.0L + xl * xl));
+    xl = xl / (1.0L + s21_sqrt_l(1.0L + xl * xl));
     reductions++;
   }
 
@@ -503,16 +497,45 @@ long double s21_atan(double x) {
   return sign ? -out : out;
 }
 
-long double s21_asin(double x) {
+static long double s21_asin_l(long double x) {
   if (s21_isnan_l(x)) return x;
-  if (x < -1.0 || x > 1.0) return S21_NAN;
-  if (x == 1.0) return S21_PI_2;
-  if (x == -1.0) return -S21_PI_2;
-  return s21_atan((long double)x / s21_sqrt(1.0 - (long double)x * x));
+  if (x < -1.0L || x > 1.0L) return S21_NAN;
+  if (x == 1.0L) return S21_PI_2;
+  if (x == -1.0L) return -S21_PI_2;
+  return s21_atan_l(x / s21_sqrt_l(1.0L - x * x));
 }
 
-long double s21_acos(double x) {
+static long double s21_acos_l(long double x) {
   if (s21_isnan_l(x)) return x;
-  if (x < -1.0 || x > 1.0) return S21_NAN;
-  return S21_PI_2 - s21_asin(x);
+  if (x < -1.0L || x > 1.0L) return S21_NAN;
+  return S21_PI_2 - s21_asin_l(x);
 }
+
+/* ============================================================
+   Публичные функции — тонкие обёртки над _l-версиями.
+   Параметры double сохранены по требованию School 21.
+   ============================================================ */
+
+int s21_abs(int x) {
+  if (x >= 0) return x;
+  return (int)(-(unsigned)x);
+}
+
+long double s21_fabs(double x) { return s21_fabs_l((long double)x); }
+long double s21_ceil(double x) { return s21_ceil_l((long double)x); }
+long double s21_floor(double x) { return s21_floor_l((long double)x); }
+long double s21_fmod(double x, double y) {
+  return s21_fmod_l((long double)x, (long double)y);
+}
+long double s21_sqrt(double x) { return s21_sqrt_l((long double)x); }
+long double s21_exp(double x) { return s21_exp_l((long double)x); }
+long double s21_log(double x) { return s21_log_l((long double)x); }
+long double s21_pow(double base, double exp_val) {
+  return s21_pow_l((long double)base, (long double)exp_val);
+}
+long double s21_sin(double x) { return s21_sin_l((long double)x); }
+long double s21_cos(double x) { return s21_cos_l((long double)x); }
+long double s21_tan(double x) { return s21_tan_l((long double)x); }
+long double s21_atan(double x) { return s21_atan_l((long double)x); }
+long double s21_asin(double x) { return s21_asin_l((long double)x); }
+long double s21_acos(double x) { return s21_acos_l((long double)x); }
