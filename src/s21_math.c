@@ -1,42 +1,50 @@
 #include "s21_math.h"
 
-/* Определяем разрядность long double.
-   __LDBL_MANT_DIG__ значения:
-     53  — 64-бит (Apple Silicon, ARM64 macOS, -mlong-double-64)
-     64  — 80-бит (x86-64 extended precision)
-     113 — 128-бит (IEEE 754 quad, ARM64 Linux) */
+/* Разрядность long double определяется через __LDBL_MANT_DIG__:
+     53  — double (Apple Silicon, ARM64 macOS, -mlong-double-64)
+     64  — 80-бит x86 extended precision
+     113 — 128-бит IEEE 754 quad (ARM64 Linux, -mlong-double-128)
+
+   Константы 2π и ln2 заданы парами HI + LO, где HI — ближайшее
+   представимое long double, а LO — точный остаток (константа − HI).
+   Значения получены эмпирически:
+     80-бит  — probe_consts2.c
+     64-бит  — probe_consts2.c
+     128-бит — probe_128_mpfr.c (MPFR с 256-битной точностью) */
 #if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 53
-#define S21_LDBL_IS_DOUBLE 1
+  #define S21_2PI_HI  6.28318530717958623200L
+  #define S21_2PI_LO  2.44929359829470641435e-16L
+  #define S21_LN2_HI  0.693147180559945286227L
+  #define S21_LN2_LO  2.31904681384629955842e-17L
+  #define S21_EPS         1e-15L
+  #define S21_MAX_ITER    100
+  #define S21_EXP_LIMIT   709.0L
+#elif defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 64
+  #define S21_2PI_HI  6.2831853071795864770256179L
+  #define S21_2PI_LO -1.0033115225336681390734914e-19L
+  #define S21_LN2_HI  0.69314718055994530942869047L
+  #define S21_LN2_LO -1.1458352726798725802795825e-20L
+  #define S21_EPS         1e-25L
+  #define S21_MAX_ITER    300
+  #define S21_EXP_LIMIT   11356.0L
+#elif defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 113
+  #define S21_2PI_HI  6.283185307179586476925286766559005594958L
+  #define S21_2PI_LO  1.734362026024756204959408805208670393752e-34L
+  #define S21_LN2_HI  0.6931471805599453094172321214581765750836L
+  #define S21_LN2_LO -7.008139474549585163412662008771625673778e-36L
+  #define S21_EPS         1e-35L
+  #define S21_MAX_ITER    400
+  #define S21_EXP_LIMIT   11356.0L
 #else
-#define S21_LDBL_IS_DOUBLE 0
+  #error "Unsupported __LDBL_MANT_DIG__"
 #endif
 
-#define S21_PI 3.1415926535897932384626433832795028841971693993751L
+/* S21_PI и S21_PI_2 — для asin/acos/atan, не участвуют в range
+   reduction. S21_2PI используется только в fallback-ветке
+   s21_reduce_2pi для |x| > 1.16e20. */
+#define S21_PI   3.1415926535897932384626433832795028841971693993751L
 #define S21_PI_2 1.5707963267948966192313216916397514420985846996876L
-#define S21_2PI 6.2831853071795864769252867665590057683943387987502L
-
-/* 2*pi = HI + LO, чтобы точнее приводить аргумент по модулю 2*pi */
-#define S21_2PI_HI 6.283185307179586L
-#define S21_2PI_LO 2.4492935982947064e-16L
-
-/* ln2 = HI + LO для exp/log */
-#define S21_LN2 0.6931471805599453094172321214581765680755001343603L
-#define S21_LN2_HI 0.693147180559945309417232121458176568L
-#define S21_LN2_LO 7.5500134360255254121e-33L
-
-/* Параметры зависят от точности long double.
-   На Apple Silicon long double == double, эпсилон ~2.2e-16,
-   поэтому порог сходимости поднят до 1e-15, а лимит exp
-   снижен до ln(DBL_MAX) ≈ 709.78 (переполнение наступает раньше). */
-#if S21_LDBL_IS_DOUBLE
-#define S21_EPS 1e-15L
-#define S21_MAX_ITER 100
-#define S21_EXP_LIMIT 709.0L
-#else
-#define S21_EPS 1e-25L
-#define S21_MAX_ITER 300
-#define S21_EXP_LIMIT 11356.0L
-#endif
+#define S21_2PI  6.2831853071795864769252867665590057683943387987502L
 
 #define S21_INF __builtin_infl()
 #define S21_NAN __builtin_nanl("")
@@ -51,25 +59,48 @@
 static int s21_isnan_l(long double x) { return x != x; }
 static int s21_isinf_l(long double x) { return x == S21_INF || x == -S21_INF; }
 static long double s21_fabsl(long double x) { return x < 0 ? -x : x; }
+static int s21_signbit_l(long double x) { return __builtin_signbitl(x); }
 
+/* Отбрасывание дробной части. Работает до 2^64 через unsigned long
+   long, что расширяет корректный диапазон s21_reduce_2pi до
+   |x| < 2π·2^64 ≈ 1.16e20. */
 static long double s21_trunc_l(long double x) {
   if (x >= 0) {
-    if (x >= S21_LL_MAX) return x;
-    return (long double)(long long)x;
+    if (x < 9223372036854775808.0L)     /* < 2^63 */
+      return (long double)(long long)x;
+    if (x < 18446744073709551616.0L)    /* < 2^64 */
+      return (long double)(unsigned long long)x;
+    return x;
   }
-  if (x <= S21_LL_MIN) return x;
-  return (long double)(long long)x;
+  if (x > -9223372036854775808.0L)
+    return (long double)(long long)x;
+  if (x > -18446744073709551616.0L)
+    return -(long double)(unsigned long long)(-x);
+  return x;
 }
 
-/* x * 2^n для неотрицательного n */
+/* Нечётное целое? Используется в s21_pow для случая base = -0.0.
+   Для |e| >= 2^63 знак показателя определить нельзя без потери
+   точности (long double там уже не различает чётные/нечётные),
+   поэтому возвращаем 0. */
+static int s21_is_odd_int(long double e) {
+  long double t = s21_trunc_l(e);
+  if (t != e) return 0;
+  if (s21_fabsl(t) >= 9223372036854775808.0L) return 0;  /* >= 2^63 */
+  return (int)(((long long)t) & 1LL);
+}
+
+/* x · 2^n для любого целого n (включая отрицательные). */
 static long double s21_ldexp_int(long double x, long long n) {
-  if (n == 0) return x;
+  int neg = (n < 0);
+  unsigned long long un =
+      neg ? (unsigned long long)(-(n + 1)) + 1ULL : (unsigned long long)n;
   long double result = x;
-  long double factor = 2.0L;
-  while (n) {
-    if (n & 1) result *= factor;
-    factor *= factor;
-    n >>= 1;
+  long double factor = neg ? 0.5L : 2.0L;
+  while (un) {
+    if (un & 1ULL) result *= factor;
+    un >>= 1;
+    if (un) factor *= factor;
   }
   return result;
 }
@@ -83,7 +114,6 @@ typedef struct {
   long double lo;
 } s21_dd;
 
-/* Точное сложение a + b: s + err == a + b (по математике). */
 static void s21_two_sum(long double a, long double b, long double *s,
                         long double *err) {
   long double sum = a + b;
@@ -95,14 +125,9 @@ static void s21_two_sum(long double a, long double b, long double *s,
   *err = ar + br;
 }
 
-/* Точное произведение a·b: p + err == a·b (по математике).
-   Использует FMA / fma. В 64-битном режиме (Apple Silicon)
-   использует fma для double, так как fmal несовместима с ABI
-   glibc при -mlong-double-64. */
 static void s21_two_product(long double a, long double b, long double *p,
                             long double *err) {
 #if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 53
-  /* long double == double: fma для double */
   double a_d = (double)a;
   double b_d = (double)b;
   double p_d = a_d * b_d;
@@ -110,7 +135,6 @@ static void s21_two_product(long double a, long double b, long double *p,
   *p = (long double)p_d;
   *err = (long double)err_d;
 #else
-  /* 80-бит или 128-бит: fmal работает корректно */
   *p = a * b;
   *err = __builtin_fmal(a, b, -*p);
 #endif
@@ -123,7 +147,6 @@ static s21_dd s21_dd_make(long double x) {
   return r;
 }
 
-/* a + b с сохранением потерянных битов и ре-нормализацией. */
 static s21_dd s21_dd_add(s21_dd a, s21_dd b) {
   long double s, err;
   s21_two_sum(a.hi, b.hi, &s, &err);
@@ -146,21 +169,21 @@ static s21_dd s21_dd_ldexp(s21_dd a, long long n) {
 
 static long double s21_dd_value(s21_dd a) { return a.hi + a.lo; }
 
-/* Приведение x по модулю 2π с использованием double-double.
-
-   Ключевая идея: вычитание x − n·2π выполняется в dd, чтобы
-   сохранить младшие биты. Это критично для sin/cos на больших
-   аргументах, где x и n·2π близки, а разность мала.
-
-   Раньше вычитание шло в long double, что давало ошибку
-   ~|x|·ε ≈ 1e10·1e-16 = 1e-6 в остатке r и приводило к ULP ~1e9
-   на sin(1e10) в 64-битном режиме. Теперь ошибка ~1e10·ε² ≈ 1e-22. */
 static long double s21_reduce_2pi(long double x) {
-  /* n = trunc(x / 2π) */
+  if (s21_fabsl(x) > 1.16e20L) {
+    long double r = x;
+    while (s21_fabsl(r) >= S21_2PI) {
+      long double t = S21_2PI;
+      while (s21_fabsl(r) >= t * 2.0L) t *= 2.0L;
+      long double prev = r;
+      r = (r >= 0) ? r - t : r + t;
+      if (r == prev) break;
+    }
+    return r;
+  }
+
   long double n = s21_trunc_l(x / S21_2PI);
 
-  /* Вычислим n·2π в dd: n·2π = n·2π_hi + n·2π_lo
-     n·2π_hi — точное произведение через two_product */
   long double p_hi, p_err;
   s21_two_product(n, S21_2PI_HI, &p_hi, &p_err);
   long double p_lo = n * S21_2PI_LO;
@@ -168,19 +191,13 @@ static long double s21_reduce_2pi(long double x) {
   s21_dd n_2pi;
   s21_two_sum(p_hi, p_err + p_lo, &n_2pi.hi, &n_2pi.lo);
 
-  /* r = x − n·2π в dd */
   s21_dd x_dd = s21_dd_make(x);
   s21_dd neg;
   neg.hi = -n_2pi.hi;
   neg.lo = -n_2pi.lo;
   s21_dd r_dd = s21_dd_add(x_dd, neg);
-
   return s21_dd_value(r_dd);
 }
-
-/* ============================================================
-   Бинарное возведение в степень
-   ============================================================ */
 
 static long double s21_powi(long double base, long long n) {
   int neg = (n < 0);
@@ -201,7 +218,10 @@ static long double s21_powi(long double base, long long n) {
    Публичные функции
    ============================================================ */
 
-int s21_abs(int x) { return x < 0 ? -x : x; }
+int s21_abs(int x) {
+  if (x >= 0) return x;
+  return (int)(-(unsigned)x);
+}
 
 long double s21_fabs(double x) {
   if (x < 0) return -(long double)x;
@@ -212,6 +232,7 @@ long double s21_fabs(double x) {
 long double s21_ceil(double x) {
   if (s21_isnan_l(x) || s21_isinf_l(x)) return x;
   long double y = (long double)x;
+  if (y == 0.0L) return y;
   if (y >= S21_LL_MAX || y <= S21_LL_MIN) return y;
   long long i = (long long)y;
   if (y > 0 && y > (long double)i) return (long double)(i + 1);
@@ -222,6 +243,7 @@ long double s21_ceil(double x) {
 long double s21_floor(double x) {
   if (s21_isnan_l(x) || s21_isinf_l(x)) return x;
   long double y = (long double)x;
+  if (y == 0.0L) return y;
   if (y >= S21_LL_MAX || y <= S21_LL_MIN) return y;
   long long i = (long long)y;
   if (y > 0 && y > (long double)i) return (long double)i;
@@ -233,6 +255,7 @@ long double s21_fmod(double x, double y) {
   if (s21_isnan_l(x) || s21_isnan_l(y) || s21_isinf_l(x) || y == 0.0)
     return S21_NAN;
   if (s21_isinf_l(y)) return x;
+  if (x == 0.0) return (long double)x;
 
   long double xl = s21_fabsl((long double)x);
   long double yl = s21_fabsl((long double)y);
@@ -252,14 +275,19 @@ long double s21_sqrt(double x) {
   if (x == 0 || s21_isinf_l(x)) return x;
 
   long double xl = (long double)x;
-  long double res = (xl < 1.0L) ? 1.0L : xl;
 
-  for (int i = 0; i < 100; i++) {
+  int scale = 0;
+  while (xl < 0.25L) { xl *= 4.0L; scale++; }
+  while (xl > 1.0L)  { xl *= 0.25L; scale--; }
+
+  long double res = 0.75L;
+  for (int i = 0; i < 60; i++) {
     long double next = 0.5L * (res + xl / res);
     if (next == res) break;
     res = next;
   }
-  return res;
+
+  return s21_ldexp_int(res, -(long long)scale);
 }
 
 long double s21_exp(double x) {
@@ -275,12 +303,11 @@ long double s21_exp(double x) {
   }
   if (y > S21_EXP_LIMIT) return sign ? 0.0L : S21_INF;
 
-  long double k = s21_trunc_l(y / S21_LN2 + 0.5L);
+  long double k = s21_trunc_l(y / S21_LN2_HI + 0.5L);
 
   long double r;
 
 #if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 64
-  /* 80-бит: FMA-путь через __builtin_fmal */
   long double khi = (long double)k * S21_LN2_HI;
   long double khi_err = __builtin_fmal((long double)k, S21_LN2_HI, -khi);
 
@@ -298,7 +325,6 @@ long double s21_exp(double x) {
   r_dd = s21_dd_add(r_dd, neg2);
   r = s21_dd_value(r_dd);
 #else
-  /* 128-бит или 64-бит: обычное разбитое вычитание */
   r = y - k * S21_LN2_HI - k * S21_LN2_LO;
 #endif
 
@@ -350,11 +376,14 @@ long double s21_log(double x) {
   s21_dd twice = s21_dd_make(2.0L * sum.hi);
   twice.lo = 2.0L * sum.lo;
 
-  s21_dd t1 = s21_dd_make((long double)count * S21_LN2_HI);
-  s21_dd t2 = s21_dd_make((long double)count * S21_LN2_LO);
+  long double khi, khi_err;
+  s21_two_product((long double)count, S21_LN2_HI, &khi, &khi_err);
+  long double klo = (long double)count * S21_LN2_LO;
 
-  s21_dd result = s21_dd_add(twice, t1);
-  result = s21_dd_add(result, t2);
+  s21_dd result = twice;
+  result = s21_dd_add(result, s21_dd_make(khi));
+  result = s21_dd_add(result, s21_dd_make(khi_err));
+  result = s21_dd_add(result, s21_dd_make(klo));
   return s21_dd_value(result);
 }
 
@@ -366,8 +395,11 @@ long double s21_pow(double base, double exp_val) {
   long double e = (long double)exp_val;
 
   if (b == 0.0L) {
-    if (e < 0.0L) return S21_INF;
-    return 0.0L;
+    int b_neg = s21_signbit_l(b);
+    int e_odd = s21_is_odd_int(e);
+
+    if (e < 0.0L) return (b_neg && e_odd) ? -S21_INF : S21_INF;
+    return (b_neg && e_odd) ? -0.0L : 0.0L;
   }
 
   long double e_int = s21_trunc_l(e);

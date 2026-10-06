@@ -22,6 +22,35 @@ static double now_sec(void) {
 
 static volatile long double sink = 0.0L;
 
+/* При -mlong-double-64 на x86-64 glibc собрана под 80-битный ABI.
+   Прямой вызов expl/logl/sinl/... читает из регистров 16 байт и
+   получает мусор. Используем double-версии и расширяем результат. */
+#if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 53
+  #define S21_LIBM1(name, x)     ((long double)name((double)(x)))
+  #define S21_LIBM2(name, x, y)  ((long double)name((double)(x), (double)(y)))
+#else
+  #define S21_LIBM1(name, x)     name##l(x)
+  #define S21_LIBM2(name, x, y)  name##l((x), (y))
+#endif
+
+/* Обёртки: bench_unary/bench_binary принимают указатель на функцию,
+   а макрос развернуть в указатель нельзя. */
+static long double libm_exp (long double x) { return S21_LIBM1(exp,  x); }
+static long double libm_log (long double x) { return S21_LIBM1(log,  x); }
+static long double libm_sqrt(long double x) { return S21_LIBM1(sqrt, x); }
+static long double libm_sin (long double x) { return S21_LIBM1(sin,  x); }
+static long double libm_cos (long double x) { return S21_LIBM1(cos,  x); }
+static long double libm_tan (long double x) { return S21_LIBM1(tan,  x); }
+static long double libm_atan(long double x) { return S21_LIBM1(atan, x); }
+static long double libm_asin(long double x) { return S21_LIBM1(asin, x); }
+static long double libm_acos(long double x) { return S21_LIBM1(acos, x); }
+static long double libm_pow (long double x, long double y) {
+  return S21_LIBM2(pow, x, y);
+}
+static long double libm_fmod(long double x, long double y) {
+  return S21_LIBM2(fmod, x, y);
+}
+
 typedef long double (*s21_unary_fn)(double);
 typedef long double (*libm_unary_fn)(long double);
 
@@ -91,6 +120,8 @@ int main(void) {
   printf("Benchmark: %d calls per function\n", ITERS);
 #if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 113
   printf("Mode: 128-bit long double (quad precision)\n\n");
+#elif defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 53
+  printf("Mode: 64-bit long double (double)\n\n");
 #else
   printf("Mode: 80-bit long double (x86 extended)\n\n");
 #endif
@@ -100,24 +131,23 @@ int main(void) {
   printf("--------------------------------------------------------------\n");
 
   /* Одноместные — положительные аргументы */
-  bench_unary("exp", s21_exp, expl, pos_args);
-  bench_unary("log", s21_log, logl, pos_args);
-  bench_unary("sqrt", s21_sqrt, sqrtl, pos_args);
+  bench_unary("exp",  s21_exp,  libm_exp,  pos_args);
+  bench_unary("log",  s21_log,  libm_log,  pos_args);
+  bench_unary("sqrt", s21_sqrt, libm_sqrt, pos_args);
 
   /* Одноместные — произвольные аргументы */
-  bench_unary("sin", s21_sin, sinl, any_args);
-  bench_unary("cos", s21_cos, cosl, any_args);
-  bench_unary("tan", s21_tan, tanl, any_args);
-  bench_unary("atan", s21_atan, atanl, any_args);
+  bench_unary("sin",  s21_sin,  libm_sin,  any_args);
+  bench_unary("cos",  s21_cos,  libm_cos,  any_args);
+  bench_unary("tan",  s21_tan,  libm_tan,  any_args);
+  bench_unary("atan", s21_atan, libm_atan, any_args);
 
   /* asin/acos — аргументы в области определения [-1, 1] */
-  bench_unary("asin", s21_asin, asinl, unit_args);
-  bench_unary("acos", s21_acos, acosl, unit_args);
+  bench_unary("asin", s21_asin, libm_asin, unit_args);
+  bench_unary("acos", s21_acos, libm_acos, unit_args);
 
-  /* Бинарные. pow с нецелым показателем — честное сравнение через exp/log.
-     fmod с делителем 0.3 — цикл while реально работает. */
-  bench_binary("pow", s21_pow, powl, pos_args, 1.5);
-  bench_binary("fmod", s21_fmod, fmodl, pos_args, 0.3);
+  /* Бинарные */
+  bench_binary("pow",  s21_pow,  libm_pow,  pos_args, 1.5);
+  bench_binary("fmod", s21_fmod, libm_fmod, pos_args, 0.3);
 
   printf("--------------------------------------------------------------\n");
   printf("(ratio > 1 — s21_* медленнее libm, ratio < 1 — быстрее)\n");

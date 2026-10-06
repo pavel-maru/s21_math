@@ -18,12 +18,6 @@
 #define EPS 1e-12
 #endif
 
-/* При -mlong-double-64 на x86-64 glibc expl/logl/sinl/... скомпилированы
-   под 80-битный ABI и возвращают мусор при 64-битном long double.
-   nextafterl страдает тем же. Используем версии без суффикса l
-   (double-ABI), результат кастуем к long double.
-   На реальном Apple Silicon libm тоже 64-битная, так что там это
-   и не нужно, но макрос всё равно корректен. */
 #if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 53
 #define S21_NEXTAFTER(x, y) nextafter((double)(x), (double)(y))
 #define S21_LIBM_FN(name, x) ((long double)name((double)(x)))
@@ -32,14 +26,16 @@
 #define S21_LIBM_FN(name, x) name##l(x)
 #endif
 
-/* Печать long double. В 64-битном режиме printf("%Le") читает из стека
-   16 байт (80-битный ABI glibc), а наш long double — 8 байт.
-   Кастуем к double и используем %e. */
 #if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 53
 #define S21_PRINT_LD(x) printf("%-11.2e", (double)(x))
 #else
 #define S21_PRINT_LD(x) printf("%-11.2Le", (x))
 #endif
+
+/* Абсолютное отклонение. Если обе стороны равны (в том числе обе
+   INF или обе NaN), считаем отклонение нулевым — иначе |INF−INF|
+   даёт nan в таблице. */
+#define S21_ABS_DIFF(a, b) (((a) == (b)) ? 0.0L : fabsl((a) - (b)))
 
 /* ---------- abs ---------- */
 START_TEST(test_abs_basic) {
@@ -47,6 +43,9 @@ START_TEST(test_abs_basic) {
   ck_assert_int_eq(s21_abs(5), 5);
   ck_assert_int_eq(s21_abs(-5), 5);
   ck_assert_int_eq(s21_abs(2147483647), 2147483647);
+  /* INT_MIN: значение не определено стандартом, но не должно быть UB
+     и должно совпадать с поведением glibc (INT_MIN на two's complement). */
+  ck_assert_int_eq(s21_abs(-2147483647 - 1), -2147483647 - 1);
 }
 END_TEST
 
@@ -100,9 +99,12 @@ START_TEST(test_fmod_loop) {
 END_TEST
 
 START_TEST(test_fmod_edge) {
-  ck_assert(s21_fmod(1.0, 0.0) != s21_fmod(1.0, 0.0)); /* NaN */
+  ck_assert(s21_fmod(1.0, 0.0) != s21_fmod(1.0, 0.0));
   ck_assert_ldouble_eq(s21_fmod(5.0, INFINITY), 5.0);
   ck_assert(s21_fmod(INFINITY, 2.0) != s21_fmod(INFINITY, 2.0));
+  /* fmod(±0.0, y) сохраняет знак нуля. */
+  ck_assert_ldouble_eq(s21_fmod(0.0, 3.0), fmod(0.0, 3.0));
+  ck_assert_ldouble_eq(s21_fmod(-0.0, 3.0), fmod(-0.0, 3.0));
 }
 END_TEST
 
@@ -124,8 +126,12 @@ END_TEST
 START_TEST(test_sqrt_edge) {
   ck_assert_ldouble_eq(s21_sqrt(0.0), 0.0);
   ck_assert_ldouble_eq(s21_sqrt(1.0), 1.0);
-  ck_assert(s21_sqrt(-1.0) != s21_sqrt(-1.0)); /* NaN */
+  ck_assert(s21_sqrt(-1.0) != s21_sqrt(-1.0));
   ck_assert(s21_sqrt(INFINITY) == INFINITY);
+  /* Очень малые x: масштабирование в sqrt должно давать корректный
+     результат за 60 итераций. */
+  ck_assert_ldouble_eq_tol(s21_sqrt(1e-30), sqrt(1e-30), 1e-22);
+  ck_assert_ldouble_eq_tol(s21_sqrt(1e-300), sqrt(1e-300), 1e-160);
 }
 END_TEST
 
@@ -155,7 +161,7 @@ END_TEST
 START_TEST(test_log_edge) {
   ck_assert_ldouble_eq(s21_log(1.0), 0.0);
   ck_assert(s21_log(0.0) == -INFINITY);
-  ck_assert(s21_log(-1.0) != s21_log(-1.0)); /* NaN */
+  ck_assert(s21_log(-1.0) != s21_log(-1.0));
   ck_assert(s21_log(INFINITY) == INFINITY);
 }
 END_TEST
@@ -178,17 +184,20 @@ START_TEST(test_pow_edge) {
   ck_assert_ldouble_eq_tol(s21_pow(-2.0, 2.0), 4.0, EPS);
   ck_assert_ldouble_eq_tol(s21_pow(2.0, 10.0), 1024.0, EPS);
   ck_assert_ldouble_eq_tol(s21_pow(2.0, -2.0), 0.25, EPS);
-  ck_assert(s21_pow(-2.0, 0.5) != s21_pow(-2.0, 0.5)); /* NaN */
+  ck_assert(s21_pow(-2.0, 0.5) != s21_pow(-2.0, 0.5));
+  /* pow(-0.0, ...) — знак результата. */
+  ck_assert(s21_pow(-0.0, -3.0) == -INFINITY);
+  ck_assert(s21_pow(-0.0, -2.0) == INFINITY);
+  ck_assert(s21_pow(-0.0, 3.0) == 0.0);
+  ck_assert(s21_pow(-0.0, 2.0) == 0.0);
 }
 END_TEST
 
 START_TEST(test_pow_neg_large_exp) {
   ck_assert_ldouble_eq_tol(s21_pow(-2.0, 31.0), -2147483648.0, EPS);
   ck_assert_ldouble_eq_tol(s21_pow(-2.0, 32.0), 4294967296.0, EPS);
-  ck_assert_ldouble_eq_tol(s21_pow(-2.0, 60.0), 1152921504606846976.0,
-                           EPS); /* 2^60 */
-  ck_assert_ldouble_eq_tol(s21_pow(-2.0, 61.0), -2305843009213693952.0,
-                           EPS); /* -2^61 */
+  ck_assert_ldouble_eq_tol(s21_pow(-2.0, 60.0), 1152921504606846976.0, EPS);
+  ck_assert_ldouble_eq_tol(s21_pow(-2.0, 61.0), -2305843009213693952.0, EPS);
   ck_assert_ldouble_eq_tol(s21_pow(-1.0, 1000.0), 1.0, EPS);
   ck_assert_ldouble_eq_tol(s21_pow(-1.0, 1001.0), -1.0, EPS);
 }
@@ -328,27 +337,27 @@ START_TEST(test_precision_compare) {
 
   printf("%-8s", "exp");
   for (int i = 0; i < n; i++)
-    S21_PRINT_LD(fabsl(S21_LIBM_FN(exp, args[i]) - s21_exp(args[i])));
+    S21_PRINT_LD(S21_ABS_DIFF(S21_LIBM_FN(exp, args[i]), s21_exp(args[i])));
   printf("\n");
 
   printf("%-8s", "log");
   for (int i = 0; i < n; i++)
-    S21_PRINT_LD(fabsl(S21_LIBM_FN(log, args[i]) - s21_log(args[i])));
+    S21_PRINT_LD(S21_ABS_DIFF(S21_LIBM_FN(log, args[i]), s21_log(args[i])));
   printf("\n");
 
   printf("%-8s", "sin");
   for (int i = 0; i < n; i++)
-    S21_PRINT_LD(fabsl(S21_LIBM_FN(sin, args[i]) - s21_sin(args[i])));
+    S21_PRINT_LD(S21_ABS_DIFF(S21_LIBM_FN(sin, args[i]), s21_sin(args[i])));
   printf("\n");
 
   printf("%-8s", "cos");
   for (int i = 0; i < n; i++)
-    S21_PRINT_LD(fabsl(S21_LIBM_FN(cos, args[i]) - s21_cos(args[i])));
+    S21_PRINT_LD(S21_ABS_DIFF(S21_LIBM_FN(cos, args[i]), s21_cos(args[i])));
   printf("\n");
 
   printf("%-8s", "atan");
   for (int i = 0; i < n; i++)
-    S21_PRINT_LD(fabsl(S21_LIBM_FN(atan, args[i]) - s21_atan(args[i])));
+    S21_PRINT_LD(S21_ABS_DIFF(S21_LIBM_FN(atan, args[i]), s21_atan(args[i])));
   printf("\n");
 
   printf("\n=== ULP deviation: |libm - s21_*| / ulp(libm) ===\n");
