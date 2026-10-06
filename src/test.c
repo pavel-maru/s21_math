@@ -37,6 +37,16 @@
    даёт nan в таблице. */
 #define S21_ABS_DIFF(a, b) (((a) == (b)) ? 0.0L : fabsl((a) - (b)))
 
+/* Условие, при котором test_precision_compare пропускается:
+   128-битный long double на x86-64 (libcheck ABI). Вне этого
+   режима тест работает и покрывает s21_ulp_diff. */
+#if !(defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 113 && \
+      defined(__x86_64__))
+#define S21_TEST_PRECISION_COMPARE 1
+#else
+#define S21_TEST_PRECISION_COMPARE 0
+#endif
+
 /* ---------- abs ---------- */
 START_TEST(test_abs_basic) {
   ck_assert_int_eq(s21_abs(0), 0);
@@ -298,6 +308,42 @@ START_TEST(test_acos_edge) {
 }
 END_TEST
 
+/* ---------- range reduction / trunc_l fallback ---------- */
+START_TEST(test_reduce_2pi_fallback) {
+  /* Fallback в s21_reduce_2pi для |x| > 1.16e20. Точное
+     приведение по модулю 2π на таких аргументах невозможно:
+     входной double не содержит достаточно битов, чтобы
+     восстановить истинный остаток. Проверяем только, что
+     функция не возвращает NaN и не падает. */
+  long double s = s21_sin(1e25);
+  ck_assert(s == s);
+  s = s21_cos(1e25);
+  ck_assert(s == s);
+
+  /* Ветка s21_trunc_l для |x| ∈ [2^63, 2^64) достигается
+     через reduce_2pi при x ∈ [2π·2^63, 1.16e20). */
+  s = s21_sin(1e20);
+  ck_assert(s == s);
+  s = s21_sin(-1e20);
+  ck_assert(s == s);
+
+  /* Ветка return x в s21_trunc_l (|x| ≥ 2^64) достигается
+     через s21_pow_l → s21_is_odd_int → s21_trunc_l. */
+  ck_assert(s21_pow(0.0, 1e20) == 0.0L);
+  ck_assert(s21_pow(0.0, 1e25) == 0.0L);
+
+  /* Отрицательный показатель <= -2^64 попадает в последнюю
+     ветку s21_trunc_l (return x) через s21_pow → s21_is_odd_int.
+     Для |e| >= 2^63 s21_is_odd_int намеренно возвращает 0
+     (чётность неразличима в long double), поэтому результат
+     для -0.0 тоже +INF, а не -INF. */
+  ck_assert(s21_pow(0.0, -1e25) == INFINITY);
+  ck_assert(s21_pow(-0.0, -1e25) == INFINITY);
+}
+END_TEST
+
+#if S21_TEST_PRECISION_COMPARE
+
 /* ---------- ULP helper ---------- */
 
 static long double s21_ulp_diff(long double got, long double expected) {
@@ -314,7 +360,10 @@ static long double s21_ulp_diff(long double got, long double expected) {
   return fabsl(got - expected) / ulp;
 }
 
-/* ---------- precision comparison ---------- */
+/* ---------- precision comparison ----------
+   В 128-битном режиме на x86-64 тест пропускается: libcheck
+   собран под 80-битный ABI, и ck_assert_ldouble_* читают мусор.
+   На ARM64 (реальный quad) тот же тест работает. */
 START_TEST(test_precision_compare) {
   const double args[] = {0.5,  1.0,  1.5,   2.0, 3.0, 5.0,
                          10.0, 20.0, 100.0, 1e3, 1e6, 1e10};
@@ -402,6 +451,8 @@ START_TEST(test_precision_compare) {
 }
 END_TEST
 
+#endif  /* S21_TEST_PRECISION_COMPARE */
+
 /* ---------- suite ---------- */
 Suite *s21_math_suite(void) {
   Suite *s = suite_create("s21_math");
@@ -437,7 +488,11 @@ Suite *s21_math_suite(void) {
   tcase_add_test(tc, test_asin_edge);
   tcase_add_loop_test(tc, test_acos_loop, 0, 21);
   tcase_add_test(tc, test_acos_edge);
+  tcase_add_test(tc, test_reduce_2pi_fallback);
+
+#if S21_TEST_PRECISION_COMPARE
   tcase_add_test(tc, test_precision_compare);
+#endif
 
   suite_add_tcase(s, tc);
   return s;
