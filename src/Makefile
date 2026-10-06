@@ -1,7 +1,9 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -Werror -std=c11
 
-# Опционально: 128-битный long double (только x86, медленнее).
+# Опционально: разрядность long double (только x86-64, медленнее).
+#   LDBL=-mlong-double-128  — 128-бит quad (эмуляция ARM64 Linux)
+#   LDBL=-mlong-double-64   — 64-бит double (эмуляция Apple Silicon)
 LDBL ?=
 CFLAGS += $(LDBL)
 
@@ -22,7 +24,13 @@ $(LIB): $(OBJ)
 $(OBJ): $(SRC)
 	$(CC) $(CFLAGS) -c $(SRC) -o $(OBJ)
 
-test: $(LIB)
+# test всегда пересобирает библиотеку с нуля. Это защищает от
+# ситуации, когда s21_math.a остался от прогона в другой
+# разрядности long double: несовпадение ABI даёт мусор в тестах.
+test:
+	$(MAKE) clean
+	$(CC) $(CFLAGS) -c $(SRC) -o $(OBJ)
+	ar rcs $(LIB) $(OBJ)
 	$(CC) $(CFLAGS) test.c $(LIB) $(TEST_LIBS) -o test
 	./test
 
@@ -33,7 +41,7 @@ gcov_report: clean
 	lcov -t "s21_math" -o s21_math.info -c -d . --no-external
 	genhtml -o report s21_math.info
 
-# --- 128-битный long double ---
+# --- 128-битный long double (только x86-64 Linux, gcc) ---
 test-128:
 	$(MAKE) test LDBL=-mlong-double-128
 
@@ -41,6 +49,16 @@ gcov-128:
 	$(MAKE) gcov_report LDBL=-mlong-double-128
 
 clean-128:
+	$(MAKE) clean
+
+# --- 64-битный long double (симуляция Apple Silicon) ---
+test-64:
+	$(MAKE) test LDBL=-mlong-double-64
+
+gcov-64:
+	$(MAKE) gcov_report LDBL=-mlong-double-64
+
+clean-64:
 	$(MAKE) clean
 
 # --- Бенчмарк ---
@@ -75,4 +93,5 @@ clean:
 	rm -rf report
 
 .PHONY: all clean test gcov_report test-128 gcov-128 clean-128 \
+        test-64 gcov-64 clean-64 \
         clang-format clang-format-check valgrind asan ubsan bench
